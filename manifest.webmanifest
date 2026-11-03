@@ -1,6 +1,6 @@
 {
-  "name": "Kalorien",
-  "short_name": "Kalorien",
+  "name": "KalorienTracker",
+  "short_name": "KalorienTracker",
   "description": "Kalorien und Nährwerte tracken: Barcode scannen, suchen, Rezepte, Nährwerttabelle fotografieren. Alles bleibt auf deinem Gerät.",
   "lang": "de",
   "start_url": "./",

@@ -71,3 +71,29 @@ export async function search(q) {
   const j = await getJSON(u, 12000);
   return (j?.products || []).map(mapProduct).filter(Boolean);
 }
+
+// Für den Inhaltsstoff-Check: Zutatenliste und Zusatzinfos, erst Open Food Facts, dann Open Beauty Facts
+const CHECK_FIELDS = 'code,product_name,product_name_de,generic_name_de,brands,image_front_small_url,ingredients_text_de,ingredients_text,ingredients_text_en,additives_tags,allergens_tags,nova_group,nutriscore_grade,ingredients_analysis_tags,categories_tags,nutriments,quantity,serving_size,serving_quantity';
+const BEAUTY = 'https://world.openbeautyfacts.org';
+function checkData(p, kind) {
+  const name = (p.product_name_de || p.product_name || p.generic_name_de || '').trim() || 'Unbekanntes Produkt';
+  const cats = p.categories_tags || [];
+  return {
+    kind, src: kind === 'cos' ? 'Open Beauty Facts' : 'Open Food Facts',
+    code: p.code, name, brand: (p.brands || '').split(',')[0].trim(), img: p.image_front_small_url || '',
+    text: p.ingredients_text_de || p.ingredients_text || p.ingredients_text_en || '',
+    additives: (p.additives_tags || []).map((t) => t.replace(/^en:/, '')),
+    allergens: (p.allergens_tags || []).map((t) => t.replace(/^\w\w:/, '')),
+    nova: p.nova_group || null, nutri: p.nutriscore_grade && /^[a-e]$/.test(p.nutriscore_grade) ? p.nutriscore_grade : null,
+    vegan: (p.ingredients_analysis_tags || []).includes('en:vegan') ? 'ja' : (p.ingredients_analysis_tags || []).includes('en:non-vegan') ? 'nein' : null,
+    drink: cats.some((c) => /^en:(beverages|drinks|waters|sodas|juices)/.test(c)) || /\d\s*(ml|cl|l)\b/i.test(p.quantity || ''),
+    food: kind === 'food' ? mapProduct(p) : null,
+  };
+}
+export async function lookupCheck(code) {
+  const j = await getJSON(`${BASE}/api/v2/product/${encodeURIComponent(code)}.json?fields=${CHECK_FIELDS}&lc=de`);
+  if (j && j.status !== 0 && j.product) return checkData({ ...j.product, code }, 'food');
+  const k = await getJSON(`${BEAUTY}/api/v2/product/${encodeURIComponent(code)}.json?fields=${CHECK_FIELDS}&lc=de`);
+  if (k && k.status !== 0 && k.product) return checkData({ ...k.product, code }, 'cos');
+  return null;
+}
