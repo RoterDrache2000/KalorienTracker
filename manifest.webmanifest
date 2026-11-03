@@ -1,0 +1,19 @@
+{
+  "name": "Kalorien",
+  "short_name": "Kalorien",
+  "description": "Kalorien und Nährwerte tracken: Barcode scannen, suchen, Rezepte, Nährwerttabelle fotografieren. Alles bleibt auf deinem Gerät.",
+  "lang": "de",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F2F5F1",
+  "theme_color": "#2F7D3B",
+  "categories": ["health", "food", "lifestyle"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
