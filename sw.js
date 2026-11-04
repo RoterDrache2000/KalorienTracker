@@ -1,13 +1,13 @@
 // Service Worker: macht die App offline nutzbar. Bei Änderungen VERSION erhöhen.
-const VERSION = 'kalorien-v1.2.0';
+const VERSION = 'kalorien-v1.3.0';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
-  'js/app.js', 'js/db.js', 'js/basis.js', 'js/off.js', 'js/scanner.js', 'js/parser.js', 'js/ocr.js', 'js/goals.js', 'js/nutrients.js', 'js/ingredients.js', 'js/util.js',
+  'js/app.js', 'js/db.js', 'js/basis.js', 'js/off.js', 'js/scanner.js', 'js/parser.js', 'js/ocr.js', 'js/goals.js', 'js/nutrients.js', 'js/ingredients.js', 'js/nutriscore.js', 'js/dishes.js', 'js/foodcam.js', 'js/util.js',
   'fonts/figtree.woff2', 'fonts/bricolage.woff2',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
   'vendor/zxing/zxing.min.js', 'vendor/tesseract/tesseract.min.js', 'vendor/tesseract/worker.min.js',
 ];
-// Große Dateien der Texterkennung werden beim ersten Gebrauch gespeichert (nur die passende Variante).
+// Große Dateien (Texterkennung, Bilderkennung fürs Essensfoto) werden beim ersten Gebrauch gespeichert.
 const RUNTIME = 'kalorien-runtime-v1';
 
 self.addEventListener('install', (e) => {
@@ -24,8 +24,11 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin) return; // Open Food Facts usw. direkt
-  if (url.pathname.includes('/vendor/tesseract/core/') || url.pathname.includes('/vendor/tesseract/lang/')) {
+  if (e.request.method !== 'GET') return;
+  // Große Foto-KI: Laufzeit von jsDelivr einmal speichern (das Modell speichert Transformers.js selbst)
+  const ortCdn = url.hostname === 'cdn.jsdelivr.net' && url.pathname.startsWith('/npm/onnxruntime-web@');
+  if (url.origin !== location.origin && !ortCdn) return; // Open Food Facts usw. direkt
+  if (ortCdn || /\/vendor\/(tesseract\/core|tesseract\/lang|tfjs|mobilenet|transformers)\//.test(url.pathname)) {
     e.respondWith(
       caches.open(RUNTIME).then(async (c) => {
         const hit = await c.match(e.request);
