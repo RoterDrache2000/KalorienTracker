@@ -11,7 +11,7 @@ import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip } from './dishes.js'
 import { LIFE, GOALS, DEFAULT_PROFILE, DEFAULT_SPLIT, calc, goalText, trend, checkProfile, migrateProfile, macroGrams } from './goals.js';
 import { $, $$, ic, fmt, num, num0, inVal, esc, today, addDays, dayDiff, dayLabel, dateLong, colorFor, initials, norm, download, parseD, dstr } from './util.js';
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.0';
 const screen = $('#screen');
 const MEALS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snacks'];
 const SRC = { Gericht: ['Gericht, Richtwert', 'bls'], OFF: ['Open Food Facts', 'off'], BLS: ['Grundlebensmittel', 'bls'], Eigen: ['Eigenes', 'eigen'], Rezept: ['Rezept', 'rezept'], Foto: ['Foto-Erfassung', 'foto'], Schnell: ['Schnell-Eintrag', 'foto'] };
@@ -48,7 +48,9 @@ const S = {
   supps: [], // Supplements
   supplog: {}, // Datum -> { Supplement-ID: Anzahl }
   plan: {}, // Essensplan: Wochentag (0 = So) -> Mahlzeit -> Einträge
-  prefs: { planOnly: false, weekStart: 1, home: 'day', health: { set: false, last: 0, send: { kcal: true, macros: true, supps: true, weight: true } } },
+  prefs: { planOnly: false, weekStart: 1, home: 'day', health: { set: false, last: 0, send: { kcal: true, macros: true, supps: true, weight: true } },
+    water: { on: true, goal: 2500, glass: 250 }, streak: 'kcal', period: '3M', sunday: true },
+  vtab: 'woche', // Verlauf: "Diese Woche" oder "Rückblick"
   ringMode: null, // Tag oder Woche auf der Startseite (für diese Sitzung)
 };
 
@@ -134,6 +136,45 @@ function dayTotals(d, list = S.days.get(d) || []) {
   const t = totals(list), s = suppTotals(d);
   return { kcal: t.kcal + s.kcal, prot: t.prot + s.prot, carb: t.carb, fat: t.fat };
 }
+
+/* Verlauf über längere Zeit: Tageswerte, Serien und Rückblick */
+const PERIODS = [['1W', '1 Woche', 7], ['1M', '1 Monat', 30], ['3M', '3 Monate', 91], ['6M', '6 Monate', 182], ['1J', '1 Jahr', 365], ['ALL', 'Gesamt', 0]];
+const perShort = (k) => (k === 'ALL' ? 'Alle' : k.replace(/(\d)/, '$1 '));
+const STREAKS = { kcal: 'im Rahmen', prot: 'Eiweißziel erreicht', water: 'Wasserziel erreicht', supps: 'alle Supplements' };
+const daysBetween = (a, b) => Math.round((parseD(b) - parseD(a)) / 864e5);
+// Einträge ab `from` laden und nach Tag sortieren
+async function loadHist(from) {
+  const es = await db.range('entries', 'date', from, today());
+  const per = new Map();
+  es.forEach((e) => { if (!per.has(e.date)) per.set(e.date, []); per.get(e.date).push(e); });
+  return { from, es, per, cache: new Map() };
+}
+function histDay(H, d) {
+  let x = H.cache.get(d);
+  if (!x) { const list = H.per.get(d) || []; x = { d, ...dayTotals(d, list), n: list.length, goal: goalFor(d), water: water(d) }; H.cache.set(d, x); }
+  return x;
+}
+// Zählt der Tag für die Serie? Kalorien "im Rahmen": 70 bis 105 % vom Tagesziel; mit Wochenbudget zählt die Woche bis zu dem Tag
+function dayOk(H, kind, d) {
+  const x = histDay(H, d);
+  if (kind === 'water') return x.water > 0 && x.water * 1000 >= S.prefs.water.goal - 1;
+  if (kind === 'prot') return x.n > 0 && x.prot >= x.goal.prot;
+  if (kind === 'supps') { const log = suppTaken(d); return S.supps.length > 0 && S.supps.every((s) => log[s.id]); }
+  if (!x.n || x.kcal < x.goal.kcal * 0.7) return false;
+  if (S.goal.perDay && S.goal.keepWeek) {
+    const wd = weekDays(d).filter((w) => w <= d && w >= H.from);
+    return wd.reduce((a, w) => a + histDay(H, w).kcal, 0) <= wd.reduce((a, w) => a + histDay(H, w).goal.kcal, 0) * 1.05;
+  }
+  return x.kcal <= x.goal.kcal * 1.05;
+}
+// Aktuelle Serie: bis gestern (heute zählt mit, sobald erreicht; Kalorien erst, wenn der Tag vorbei ist)
+function currentStreak(H, kind = S.prefs.streak) {
+  if (!H || !STREAKS[kind]) return 0;
+  let c = kind !== 'kcal' && dayOk(H, kind, today()) ? 1 : 0, d = addDays(today(), -1);
+  while (d >= H.from && dayOk(H, kind, d)) { c++; d = addDays(d, -1); }
+  return c;
+}
+const streakText = (n, kind = S.prefs.streak) => `${fmt(n)} ${n === 1 ? 'Tag' : 'Tage'} ${STREAKS[kind]}`;
 
 /* Eigene Ziele: Messwerte (vom Start zum Ziel) und Tagesziele (pro Tag bzw. Woche) */
 const GOAL_TYPES = {
@@ -396,6 +437,27 @@ const topbar = (title, right = '', backIcon = 'back') => `<div class="top">${S.s
 /* ---------- Bildschirme ---------- */
 const V = {};
 
+/* Wasser-Glas: tippen = ein Glas mehr, lange drücken = eins zurück */
+let glassT = null, glassLong = false;
+async function addWater(ml) {
+  const v = Math.max(0, water(S.day) + ml / 1000);
+  await addMeasure('water', S.day, v); renderKeep();
+}
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('#glass')) return;
+  glassLong = false;
+  clearTimeout(glassT);
+  glassT = setTimeout(() => { glassLong = true; navigator.vibrate?.(30); if (water(S.day) > 0) { addWater(-S.prefs.water.glass); toast(`${S.prefs.water.glass} ml zurückgenommen`); } }, 550);
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach((n) => document.addEventListener(n, () => clearTimeout(glassT)));
+document.addEventListener('contextmenu', (e) => { if (e.target.closest('#glass')) e.preventDefault(); });
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#glass')) return;
+  e.stopPropagation();
+  if (!glassLong) addWater(S.prefs.water.glass);
+  glassLong = false;
+}, true);
+
 /* Updates: neue Version im Hintergrund holen und einen "Neu laden"-Knopf zeigen */
 function showUpdateBar() {
   if ($('#updbar')) return;
@@ -532,7 +594,7 @@ V.rechner = {
 
 /* Heute */
 V.heute = {
-  load: () => Promise.all([loadDay(S.day), loadDay(addDays(S.day, -1)), loadWeek(S.day), loadWeights()]),
+  load: async () => { const [, , , , H] = await Promise.all([loadDay(S.day), loadDay(addDays(S.day, -1)), loadWeek(S.day), loadWeights(), loadHist(addDays(today(), -400))]); S.hist = H; },
   html() {
     const list = S.days.get(S.day) || [];
     const prev = S.days.get(addDays(S.day, -1)) || [];
@@ -570,6 +632,26 @@ V.heute = {
         ? `<div class="card"><div class="cardh"><h3>Supplements heute</h3><button class="btn ghost" data-act="suppOpen" style="padding:2px 4px">${ic('check')} Alle ${rows.length} genommen</button></div></div>`
         : `<div class="card"><div class="cardh"><h3>Supplements heute</h3><span class="k num">${done} von ${rows.length}</span></div><div>${rows.map(({ s, done: dn, n }) => `<div class="supp ${dn ? 'done' : ''}"><button class="chk" data-act="suppToggle" data-id="${esc(s.id)}" aria-label="${esc(s.name)} genommen" aria-pressed="${dn}">${dn ? ic('check') : ''}</button><div style="min-width:0"><div class="n">${esc(s.name)}</div><div class="s">${n} × ${fmtA(s.amt)} ${esc(s.unit)} = ${fmtA(n * s.amt)} ${esc(s.unit)}${s.kcal ? ` · ${fmt(n * s.kcal)} kcal` : ''}</div></div><div class="stepper"><button data-act="suppDec" data-id="${esc(s.id)}" aria-label="Weniger">−</button><b>${n}</b><button data-act="suppInc" data-id="${esc(s.id)}" aria-label="Mehr">+</button></div></div>`).join('')}</div>${S.suppOpen && done === rows.length ? `<button class="btn ghost" data-act="suppOpen" style="align-self:center;padding:2px">Zuklappen</button>` : ''}</div>`;
     }
+    // Wasser: Glas antippen = +1 Glas, lange drücken = eins zurück
+    let waterCard = '';
+    const Wp = S.prefs.water;
+    if (Wp.on) {
+      const ml = water(S.day) * 1000, p = Math.min(ml / Math.max(Wp.goal, 1), 1), fillY = 84 - 70 * p;
+      waterCard = `<div class="card"><div class="cardh"><h3>Wasser</h3><span class="k num">${fmt(p * 100)} %</span></div>
+        <div class="water"><button class="glassbtn" id="glass" aria-label="${Wp.glass} ml trinken. Lange drücken nimmt ein Glas zurück"><svg viewBox="0 0 76 92" aria-hidden="true"><defs><clipPath id="gclip"><path d="M10 8h56l-6 76H16z"/></clipPath></defs><rect x="0" y="${fillY}" width="76" height="92" fill="var(--water)" opacity=".85" clip-path="url(#gclip)"/><path d="M10 8h56l-6 76H16z" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linejoin="round"/></svg><span class="pl">+${Wp.glass}</span></button>
+        <div style="min-width:0"><div class="wv num">${fmt(ml / 1000, 2)} <span>von ${fmt(Wp.goal / 1000, 1)} l</span></div><div class="bar"><i style="width:${p * 100}%"></i></div><small>Tippen: +${Wp.glass} ml · lange drücken: eins zurück</small></div></div></div>`;
+    }
+    // Sonntags (letzter Tag der Woche): kleiner Wochenrückblick
+    let sundayCard = '';
+    const wdays = weekDays(today());
+    if (S.prefs.sunday && S.day === today() && wdays[6] === today() && S.hist) {
+      const past = wdays.map((d) => histDay(S.hist, d)).filter((x) => x.n > 0), ok = wdays.filter((d) => dayOk(S.hist, 'kcal', d)).length;
+      const avgK = past.length ? past.reduce((a, x) => a + x.kcal, 0) / past.length : 0;
+      if (past.length) sundayCard = `<div class="card sunday"><div class="cardh"><h3>Dein Wochenrückblick</h3><span class="k">${WD_LONG[parseD(today()).getDay()]}</span></div>
+        <div class="stats"><div class="stat good"><span class="lbl">Im Rahmen</span><b>${ok} <small>von ${past.length} ${past.length === 1 ? 'Tag' : 'Tagen'}</small></b></div><div class="stat"><span class="lbl">Ø pro Tag</span><b class="num">${fmt(avgK)} <small>kcal</small></b></div></div>
+        <button class="btn sec" data-act="vtab" data-v="rueck" data-p="1W">Ganzen Rückblick ansehen</button></div>`;
+    }
+    const streakN = S.day === today() ? currentStreak(S.hist) : 0;
     const meals = MEALS.map((m, i) => {
       const es = list.filter((e) => e.meal === i);
       const k = es.reduce((a, e) => a + nutOf(e.n, e.g).kcal, 0);
@@ -589,7 +671,7 @@ V.heute = {
         <button class="iconbtn" data-act="day" data-d="1" aria-label="Nächster Tag">${ic('fwd')}</button></div>
       <div class="heute-grid"><div class="sticky">
       <div class="card sumcard" data-act="details" role="button" tabindex="0" aria-label="Alle Nährwerte des Tages ansehen">
-        <div class="minis" role="tablist" aria-label="Rest anzeigen für"><button role="tab" aria-selected="${!wk}" class="${wk ? '' : 'on'}" data-act="ring" data-v="day">Tag</button><button role="tab" aria-selected="${wk}" class="${wk ? 'on' : ''}" data-act="ring" data-v="week">Woche</button></div>
+        <div class="ringtop"><div class="minis" role="tablist" aria-label="Rest anzeigen für"><button role="tab" aria-selected="${!wk}" class="${wk ? '' : 'on'}" data-act="ring" data-v="day">Tag</button><button role="tab" aria-selected="${wk}" class="${wk ? 'on' : ''}" data-act="ring" data-v="week">Woche</button></div>${streakN > 0 ? `<button class="streak" data-act="vtab" data-v="rueck" aria-label="Serie: ${streakText(streakN)}. Rückblick öffnen">${ic('flame')}${streakText(streakN)}</button>` : ''}</div>
         <div class="summary">
           <div class="ring" role="img" aria-label="${big} ${small}"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="54" stroke="var(--surface2)" stroke-width="12" fill="none"/><circle cx="64" cy="64" r="54" stroke="${over ? 'var(--danger)' : 'var(--accent)'}" stroke-width="12" fill="none" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - pct)}"/></svg>
             <div class="mid"><span class="big num" ${wk ? 'style="font-size:23px"' : ''}>${big}</span><span class="small">${small}</span>${avg ? `<span class="avg num">${avg}</span>` : ''}</div></div>
@@ -601,7 +683,7 @@ V.heute = {
         <div class="more">Alle Nährwerte ${ic('fwd')}</div>
       </div>
       ${S.day !== today() ? `<button class="btn sec" data-act="gotoday">Zu heute springen</button>` : ''}
-      ${goalsCard}${suppCard}
+      ${sundayCard}${goalsCard}${suppCard}${waterCard}
       </div><div>${meals}</div></div>
     </div>`;
   },
@@ -1573,6 +1655,7 @@ async function runIngOcr(file) {
 V.verlauf = {
   async load() {
     const c = cur();
+    if (S.vtab === 'rueck') return loadRueck(c);
     const n = c.range === 'month' ? 30 : 7;
     c.from = addDays(today(), -(n - 1));
     c.list = await db.range('entries', 'date', c.from, today());
@@ -1580,6 +1663,7 @@ V.verlauf = {
     await loadWeek(today());
   },
   html() {
+    if (S.vtab === 'rueck') return rueckHtml(cur());
     const c = cur(), n = c.range === 'month' ? 30 : 7;
     const days = Array.from({ length: n }, (_, i) => addDays(c.from, i));
     const goals = days.map((d) => goalFor(d).kcal), goal = Math.max(...goals), same = goals.every((g) => g === goals[0]);
@@ -1610,6 +1694,7 @@ V.verlauf = {
     const estK = c.list.filter((e) => e.est).reduce((a, e) => a + nutOf(e.n, e.g).kcal, 0), allK = tots.reduce((a, t) => a + t.kcal, 0);
     return `${topbar('Verlauf')}
     <div class="pad" style="padding-top:0">
+      ${vtabs()}
       <div class="card"><div class="sec-h"><span class="lbl">Diese Woche</span><span class="num" style="font-size:13px;color:var(--muted)">${fmt(Math.min(eW / Math.max(gW, 1), 9.99) * 100)} %</span></div>
         <div style="font-size:15px"><b class="num" style="font-family:var(--display);font-size:22px">${fmt(eW)}</b> von ${fmt(gW)} kcal</div>
         <div class="bar" style="height:9px"><i style="width:${Math.min(eW / Math.max(gW, 1), 1) * 100}%;background:${eW > gW ? 'var(--carb)' : 'var(--accent)'}"></i></div>
@@ -1630,6 +1715,80 @@ V.verlauf = {
   },
 };
 
+const vtabs = () => `<div class="seg" role="tablist" aria-label="Ansicht"><button role="tab" aria-selected="${S.vtab !== 'rueck'}" class="${S.vtab !== 'rueck' ? 'on' : ''}" data-act="vtab" data-v="woche">Diese Woche</button><button role="tab" aria-selected="${S.vtab === 'rueck'}" class="${S.vtab === 'rueck' ? 'on' : ''}" data-act="vtab" data-v="rueck">Rückblick</button></div>`;
+
+/* Rückblick: Zeitraum 1 Woche bis Gesamt */
+async function loadRueck(c) {
+  const P = PERIODS.find((p) => p[0] === S.period) || PERIODS[2];
+  const ws = await loadWeights();
+  let from;
+  if (P[2]) from = addDays(today(), -(P[2] - 1));
+  else {
+    const first = (await db.range('entries', 'date', '0000-01-01', today())).reduce((a, e) => (e.date < a ? e.date : a), today());
+    const wFirst = ws[0]?.date || today(), wat = Object.keys(S.measures.water && !Array.isArray(S.measures.water) ? S.measures.water : {}).sort()[0] || today();
+    from = [first, wFirst, wat].sort()[0];
+  }
+  // für die Serie etwas weiter zurück laden
+  c.H = await loadHist(addDays(from, -400) < from ? addDays(today(), -Math.max(400, daysBetween(from, today()) + 1)) : from);
+  c.from = from; c.P = P; c.ws = ws;
+}
+function rueckHtml(c) {
+  const H = c.H, P = c.P, from = c.from, n = daysBetween(from, today()) + 1;
+  const days = Array.from({ length: n }, (_, i) => addDays(from, i));
+  const past = days.filter((d) => d < today()).map((d) => histDay(H, d));
+  const logged = past.filter((x) => x.n > 0);
+  const avg = (arr, f) => (arr.length ? arr.reduce((a, x) => a + f(x), 0) / arr.length : 0);
+  const ok = past.filter((x) => dayOk(H, 'kcal', x.d)).length;
+  let best = 0, run = 0; past.forEach((x) => { run = dayOk(H, 'kcal', x.d) ? run + 1 : 0; best = Math.max(best, run); });
+  const kind = STREAKS[S.prefs.streak] ? S.prefs.streak : 'kcal', cs = currentStreak(H, kind);
+  // Gewicht im Zeitraum
+  const wIn = c.ws.filter((w) => w.date >= from), w0 = wIn[0], w1 = wIn[wIn.length - 1];
+  const wDiff = wIn.length > 1 ? w1.kg - w0.kg : null;
+  // Diagramm: Tage bei 1 Woche, Wochen bis 6 Monate, Monate ab 1 Jahr (bei kurzer Gesamtzeit Wochen)
+  const per = P[0] === '1W' ? 1 : (P[0] === '1J' || (P[0] === 'ALL' && n > 180)) ? 'm' : P[0] === 'ALL' && n <= 14 ? 1 : 7;
+  const buckets = [];
+  if (per === 'm') {
+    const byM = new Map(); days.forEach((d) => { const k = d.slice(0, 7); if (!byM.has(k)) byM.set(k, []); byM.get(k).push(d); });
+    byM.forEach((ds, k) => buckets.push({ ds, lab: parseD(k + '-01').toLocaleDateString('de-DE', { month: 'short' }).replace('.', '') }));
+  } else for (let i = 0; i < n; i += per) { const ds = days.slice(i, i + per); buckets.push({ ds, lab: per === 1 ? WD[parseD(ds[0]).getDay()] : `${parseD(ds[0]).getDate()}.${parseD(ds[0]).getMonth() + 1}.` }); }
+  buckets.forEach((b) => { const xs = b.ds.map((d) => histDay(H, d)).filter((x) => x.n > 0); b.kcal = avg(xs, (x) => x.kcal); b.goal = avg(b.ds.map((d) => histDay(H, d)), (x) => x.goal.kcal); b.has = xs.length > 0; });
+  const W = 320, Hh = 150, pL = 30, pb = 20, pt = 8, max = Math.max(3000, ...buckets.map((b) => Math.max(b.kcal, b.goal) * 1.1)), y = (v) => pt + (Hh - pt - pb) * (1 - v / max), bw = (W - pL) / Math.max(buckets.length, 1);
+  const every = Math.ceil(buckets.length / 7);
+  const step = max > 4500 ? 2000 : 1000;
+  const chart = `<svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="Durchschnittliche Kalorien">${Array.from({ length: Math.floor(max / step) + 1 }, (_, i) => i * step).map((v) => `<line x1="${pL}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${pL - 5}" y="${y(v) + 3}" text-anchor="end">${v / 1000}k</text>`).join('')}
+    ${buckets.map((b, i) => `${b.has ? `<rect x="${pL + i * bw + bw * 0.18}" y="${y(b.kcal)}" width="${Math.max(bw * 0.64, 2)}" height="${Math.max(0, Hh - pb - y(b.kcal))}" rx="${bw > 14 ? 3 : 1}" fill="${b.kcal > b.goal * 1.05 ? 'var(--carb)' : 'var(--accent)'}"><title>${b.lab}: Ø ${fmt(b.kcal)} kcal</title></rect>` : ''}${i % every === 0 ? `<text x="${pL + i * bw + bw / 2}" y="${Hh - 5}" text-anchor="middle">${b.lab}</text>` : ''}`).join('')}
+    ${buckets.length > 1 ? `<polyline points="${buckets.map((b, i) => `${pL + i * bw + bw / 2},${y(b.goal)}`).join(' ')}" fill="none" stroke="var(--ink)" stroke-width="1.5" stroke-dasharray="4 3"/>` : `<line x1="${pL}" x2="${W}" y1="${y(buckets[0]?.goal || 0)}" y2="${y(buckets[0]?.goal || 0)}" stroke="var(--ink)" stroke-width="1.5" stroke-dasharray="4 3"/>`}</svg>`;
+  // Wasser
+  const Wp = S.prefs.water, wat = past.filter((x) => x.water > 0), wok = past.filter((x) => dayOk(H, 'water', x.d)).length;
+  // Häufigste Lebensmittel
+  const cnt = new Map();
+  H.es.filter((e) => e.date >= from && e.src !== 'Schnell').forEach((e) => { const k = e.name; cnt.set(k, (cnt.get(k) || 0) + 1); });
+  const tops = [...cnt].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const top = logged.reduce((a, x) => (!a || x.kcal > a.kcal ? x : a), null);
+  const dShort = (d) => parseD(d).toLocaleDateString('de-DE', { day: 'numeric', month: 'short', year: 'numeric' });
+  return `${topbar('Verlauf')}
+  <div class="pad" style="padding-top:0">
+    ${vtabs()}
+    <div class="periods" role="tablist" aria-label="Zeitraum">${PERIODS.map(([k, l]) => `<button role="tab" aria-selected="${S.period === k}" class="${S.period === k ? 'on' : ''}" data-act="period" data-v="${k}" aria-label="${l}">${perShort(k)}</button>`).join('')}</div>
+    <div style="font-size:13px;color:var(--muted)">${P[1]}: ${dShort(from)} bis heute</div>
+    ${!logged.length ? `<div class="card"><div class="empty" style="padding:0">Noch keine Einträge in diesem Zeitraum. Heute zählt erst, wenn der Tag vorbei ist.</div></div>` : `
+    <div class="stats">
+      <div class="stat"><span class="lbl">Ø Kalorien</span><b class="num">${fmt(avg(logged, (x) => x.kcal))} <small>/ Tag</small></b><span>Ziel Ø ${fmt(avg(logged, (x) => x.goal.kcal))}</span></div>
+      <div class="stat good"><span class="lbl">Im Rahmen</span><b class="num">${ok} <small>von ${logged.length}</small></b><span>${fmt((ok / logged.length) * 100)} % der Tage mit Einträgen</span></div>
+      <div class="stat"><span class="lbl">Längste Serie</span><b class="num">${best} <small>${best === 1 ? 'Tag' : 'Tage'}</small></b><span>aktuell ${cs} ${STREAKS[kind]}</span></div>
+      <div class="stat ${wDiff != null && wDiff <= 0 ? 'good' : ''}"><span class="lbl">Gewicht</span>${wDiff != null ? `<b class="num">${wDiff > 0 ? '+' : wDiff < 0 ? '−' : '±'}${fmt(Math.abs(wDiff), 1)} <small>kg</small></b><span>${fmt(w0.kg, 1)} → ${fmt(w1.kg, 1)} kg</span>` : `<b>–</b><span>${wIn.length ? 'nur ein Wert' : 'keine Werte'} im Zeitraum</span>`}</div>
+    </div>
+    <div class="card chart"><div class="sec-h"><span class="lbl">Ø Kalorien pro ${per === 1 ? 'Tag' : per === 'm' ? 'Monat' : 'Woche'}</span></div>${chart}
+      <div class="legend"><span><i style="background:var(--accent)"></i>im Ziel</span><span><i style="background:var(--carb)"></i>drüber</span><span><i style="background:none;border-top:2px dashed var(--ink);border-radius:0;height:0;width:14px"></i>Ziel</span></div></div>
+    <div class="card"><div class="lbl">Ø Makros pro Tag</div>
+      <div class="calc" style="grid-template-columns:repeat(3,1fr)"><div><b style="color:var(--prot)">${fmt(avg(logged, (x) => x.prot))} g</b><span>Eiweiß</span></div><div><b style="color:var(--carb)">${fmt(avg(logged, (x) => x.carb))} g</b><span>Kohlenh.</span></div><div><b style="color:var(--fat)">${fmt(avg(logged, (x) => x.fat))} g</b><span>Fett</span></div></div></div>`}
+    ${Wp.on && wat.length ? `<div class="stats"><div class="stat"><span class="lbl">Ø Wasser</span><b class="num">${fmt(avg(wat, (x) => x.water), 1)} <small>l / Tag</small></b><span>Ziel ${fmt(Wp.goal / 1000, 1)} l</span></div><div class="stat"><span class="lbl">Wasserziel</span><b class="num">${wok} <small>${wok === 1 ? 'Tag' : 'Tage'}</small></b><span>${fmt((wok / wat.length) * 100)} % der Tage mit Wasser</span></div></div>` : ''}
+    ${tops.length ? `<div class="card"><div class="cardh"><span class="lbl">Am häufigsten gegessen</span></div><div class="toplist">${tops.map(([nm, k], i) => `<div class="row"><b>${i + 1}</b><span>${esc(nm)}</span><span>${k}×</span></div>`).join('')}</div></div>` : ''}
+    ${top ? `<div class="card"><div class="lbl">Meiste Kalorien</div><div style="font-size:14px"><b class="num">${fmt(top.kcal)} kcal</b> am ${parseD(top.d).toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</div></div>` : ''}
+    <p class="fine">Den Standard-Zeitraum legst du unter Einstellungen → Rückblick und Serien fest.</p>
+  </div>`;
+}
+
 // Linienverlauf für Messwerte, optional mit Ziellinie
 function lineChart(ws, unit, d, target) {
   const W = 320, pl = 30, H2 = 140;
@@ -1643,6 +1802,23 @@ function lineChart(ws, unit, d, target) {
   const last = ws[ws.length - 1];
   return `<svg viewBox="0 0 ${W} ${H2}" role="img" aria-label="Verlauf in ${unit}">${ticks}${goalL}${ws.length > 1 ? `<polygon points="${area}" fill="var(--accent-soft)"/><polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>` : ''}${ws.map((w, i) => `<circle cx="${x2(i)}" cy="${y2(w.v)}" r="${i === ws.length - 1 ? 5 : 2.5}" fill="${i === ws.length - 1 ? 'var(--accent)' : 'var(--surface)'}" stroke="var(--accent)" stroke-width="2"><title>${dateLong(w.date)}: ${fmt(w.v, d)} ${unit}</title></circle>`).join('')}<text x="${x2(ws.length - 1)}" y="${y2(last.v) - 10}" text-anchor="end" style="fill:var(--ink);font-weight:700">${fmt(last.v, d)} ${unit}</text></svg>`;
 }
+
+V.watercfg = () => `${topbar('Wasser')}
+  <div class="pad" style="padding-top:0">
+    <div class="card"><label class="togglerow"><span>Wasser-Tracker<small>Karte auf der Startseite</small></span><input type="checkbox" class="tg" id="w-on" ${S.prefs.water.on ? 'checked' : ''}></label></div>
+    <div class="card"><div class="row2"><div class="field"><label for="w-goal">Tagesziel (ml)</label><input id="w-goal" inputmode="numeric" value="${S.prefs.water.goal}"></div><div class="field"><label for="w-glass">Ein Glas (ml)</label><select id="w-glass">${[150, 200, 250, 300, 330, 500].map((v) => `<option value="${v}" ${v === S.prefs.water.glass ? 'selected' : ''}>${v}</option>`).join('')}</select></div></div>
+      <div style="font-size:12.5px;color:var(--muted)">Faustregel: etwa 30 bis 35 ml pro kg Körpergewicht${S.profile && !S.profile.skipped && S.profile.weight ? ` (bei dir etwa ${fmt(Math.round((S.profile.weight * 32) / 100) * 100)} ml)` : ''}, mehr bei Sport und Hitze.</div></div>
+  </div>`;
+V.reviewcfg = () => `${topbar('Rückblick und Serien')}
+  <div class="pad" style="padding-top:0">
+    <div class="card"><div class="lbl">Standard-Zeitraum</div>
+      <div class="periods" style="background:var(--surface2)">${PERIODS.map(([k, l]) => `<button class="${S.prefs.period === k ? 'on' : ''}" data-act="defPeriod" data-v="${k}" aria-label="${l}" aria-pressed="${S.prefs.period === k}">${perShort(k)}</button>`).join('')}</div>
+      <div style="font-size:12.5px;color:var(--muted)">So öffnet sich der Rückblick. Im Verlauf kannst du jederzeit umschalten.</div></div>
+    <div class="card"><div class="lbl">Serie auf der Startseite</div>
+      <div class="typelist">${[...Object.entries(STREAKS).map(([k, l]) => [k, 'Tage ' + l]), ['off', 'Keine Serie zeigen']].map(([k, l]) => `<button data-act="streakKind" data-v="${k}" aria-pressed="${S.prefs.streak === k}" style="${S.prefs.streak === k ? 'border-color:var(--accent);background:var(--accent-soft)' : ''}">${l}${S.prefs.streak === k ? ic('check') : ''}</button>`).join('')}</div>
+      <div style="font-size:12.5px;color:var(--muted)">Im Rahmen heißt 70 bis 105 % vom Tagesziel. Mit Wochenbudget („Wochensumme gleich lassen“) zählt die Woche, damit ein Freitag mit mehr Kalorien die Serie nicht bricht.</div></div>
+    <div class="card"><label class="togglerow"><span>Wochenrückblick am Wochenende<small>Kleine Karte auf der Startseite am letzten Tag der Woche</small></span><input type="checkbox" class="tg" id="sun-on" ${S.prefs.sunday ? 'checked' : ''}></label></div>
+  </div>`;
 
 /* Einstellungen */
 V.settings = {
@@ -1683,7 +1859,10 @@ V.settings = {
       <div class="setlist">
         <button class="setrow" data-act="go" data-v="plan"><span class="ico">${ic('pot')}</span><span class="tx">Mein Essensplan<small>${Object.values(S.plan).some((d) => Object.values(d || {}).some((l) => l?.length)) ? `An ${Object.values(S.plan).filter((d) => Object.values(d || {}).some((l) => l?.length)).length} Wochentagen geplant` : 'Mahlzeiten pro Wochentag voreinstellen'}</small></span>${ic('fwd')}</button>
         <button class="setrow" data-act="go" data-v="supps"><span class="ico">${ic('pill')}</span><span class="tx">Supplements<small>${S.supps.length ? S.supps.map((s) => esc(s.name)).join(', ') : 'Tabletten und Pulver zum Abhaken'}</small></span>${ic('fwd')}</button>
+        <button class="setrow" data-act="go" data-v="watercfg"><span class="ico">${ic('drop')}</span><span class="tx">Wasser<small>Tagesziel und Glasgröße</small></span><span class="v">${S.prefs.water.on ? `${fmt(S.prefs.water.goal / 1000, 1)} l` : 'aus'}</span>${ic('fwd')}</button>
       </div>
+      <div class="lbl">Verlauf</div>
+      <div class="setlist"><button class="setrow" data-act="go" data-v="reviewcfg"><span class="ico">${ic('flame')}</span><span class="tx">Rückblick und Serien<small>Standard-Zeitraum, Serie auf der Startseite</small></span><span class="v">${(PERIODS.find((p) => p[0] === S.prefs.period) || PERIODS[2])[1]}</span>${ic('fwd')}</button></div>
       <div class="lbl">Verbindungen</div>
       <div class="setlist"><button class="setrow" data-act="go" data-v="health"><span class="ico heart">${ic('heart')}</span><span class="tx">Apple Health<small>Tageswerte an Health senden</small></span><span class="v">${S.prefs.health.set ? 'Verbunden' : 'Einrichten'}</span>${ic('fwd')}</button></div>
       <div class="lbl">App</div>
@@ -1970,6 +2149,7 @@ document.addEventListener('click', async (ev) => {
   if (tab) {
     const t = tab.dataset.tab;
     if (t === 'add') { S.pickFor = null; S.q = ''; S.showSearch = false; S.addMeal = S.day === today() ? defaultMeal() : S.addMeal; }
+    if (t === 'verlauf') { S.vtab = 'woche'; S.period = S.prefs.period; }
     root(t);
     return;
   }
@@ -1984,6 +2164,16 @@ document.addEventListener('click', async (ev) => {
     case 'none': break;
     case 'swipeDel': { const row = a.closest('.swipe'); if (row) swipeDelete(row); break; }
     case 'ring': S.ringMode = a.dataset.v; renderKeep(); break;
+    case 'vtab': {
+      const fromOutside = S.stack[0].v !== 'verlauf';
+      S.vtab = a.dataset.v;
+      if (a.dataset.p) S.period = a.dataset.p; else if (S.vtab === 'rueck' && (fromOutside || !S.period)) S.period = S.prefs.period;
+      if (fromOutside || S.stack.length > 1) root('verlauf'); else render(true);
+      break;
+    }
+    case 'period': S.period = a.dataset.v; renderKeep(); break;
+    case 'defPeriod': S.prefs.period = a.dataset.v; S.period = a.dataset.v; await setSetting('prefs', S.prefs); renderKeep(); break;
+    case 'streakKind': S.prefs.streak = a.dataset.v; await setSetting('prefs', S.prefs); renderKeep(); break;
 
     /* Supplements */
     case 'suppOpen': S.suppOpen = !S.suppOpen; renderKeep(); break;
@@ -2627,6 +2817,10 @@ screen.addEventListener('change', async (ev) => {
   if (t.closest('#profile') && t.tagName === 'SELECT') updateSuggestion(); // Eingabefelder laufen schon über "input"
   if (t.id === 'g-auto') { $('#g-manual').hidden = t.checked; updateGoalSum(); }
   if (t.id === 'theme') { S.theme = t.value; applyTheme(); await setSetting('theme', S.theme); }
+  if (t.id === 'w-on') { S.prefs.water.on = t.checked; await setSetting('prefs', S.prefs); }
+  if (t.id === 'w-glass') { S.prefs.water.glass = +t.value; await setSetting('prefs', S.prefs); }
+  if (t.id === 'w-goal') { const v = Math.round(num(t.value)); if (v >= 250 && v <= 8000) { S.prefs.water.goal = v; await setSetting('prefs', S.prefs); } else { t.value = S.prefs.water.goal; toast('Bitte zwischen 250 und 8.000 ml.', true); } }
+  if (t.id === 'sun-on') { S.prefs.sunday = t.checked; await setSetting('prefs', S.prefs); }
   if (t.id === 'aimode') { S.prefs.ai = t.value || undefined; await setSetting('prefs', S.prefs); }
   if (t.id === 'wstart') { S.prefs.weekStart = +t.value; await setSetting('prefs', S.prefs); }
   if (t.id === 'p-only') { S.prefs.planOnly = t.checked; await setSetting('prefs', S.prefs); }
@@ -2676,7 +2870,7 @@ async function init() {
   const [foods, profile, goal, favs, theme, combos, checks, goals, measures, supps, supplog, plan, prefs] = await Promise.all([db.all('foods'), getSetting('profile', null), getSetting('goal', null), getSetting('favs', []), getSetting('theme', 'system'), getSetting('combos', []), getSetting('checks', []),
     getSetting('goals', []), getSetting('measures', {}), getSetting('supps', []), getSetting('supplog', {}), getSetting('plan', {}), getSetting('prefs', null)]);
   S.goals = goals || []; S.measures = measures || {}; S.supps = supps || []; S.supplog = supplog || {}; S.plan = plan || {};
-  if (prefs) S.prefs = { ...S.prefs, ...prefs, health: { ...S.prefs.health, ...(prefs.health || {}), send: { ...S.prefs.health.send, ...(prefs.health?.send || {}) } } };
+  if (prefs) S.prefs = { ...S.prefs, ...prefs, water: { ...S.prefs.water, ...(prefs.water || {}) }, health: { ...S.prefs.health, ...(prefs.health || {}), send: { ...S.prefs.health.send, ...(prefs.health?.send || {}) } } };
   foods.forEach((f) => S.foods.set(f.id, f));
   S.profile = migrateProfile(profile);
   if (goal) S.goal = { ...S.goal, ...goal, split: { ...DEFAULT_SPLIT, ...(goal.split || {}) } };
