@@ -11,7 +11,7 @@ import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip } from './dishes.js'
 import { LIFE, GOALS, DEFAULT_PROFILE, DEFAULT_SPLIT, calc, goalText, trend, checkProfile, migrateProfile, macroGrams } from './goals.js';
 import { $, $$, ic, fmt, num, num0, inVal, esc, today, addDays, dayDiff, dayLabel, dateLong, colorFor, initials, norm, download, parseD, dstr } from './util.js';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 const screen = $('#screen');
 const MEALS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snacks'];
 const SRC = { Gericht: ['Gericht, Richtwert', 'bls'], OFF: ['Open Food Facts', 'off'], BLS: ['Grundlebensmittel', 'bls'], Eigen: ['Eigenes', 'eigen'], Rezept: ['Rezept', 'rezept'], Foto: ['Foto-Erfassung', 'foto'], Schnell: ['Schnell-Eintrag', 'foto'] };
@@ -639,7 +639,7 @@ V.heute = {
       const ml = water(S.day) * 1000, p = Math.min(ml / Math.max(Wp.goal, 1), 1), fillY = 84 - 70 * p;
       waterCard = `<div class="card"><div class="cardh"><h3>Wasser</h3><span class="k num">${fmt(p * 100)} %</span></div>
         <div class="water"><button class="glassbtn" id="glass" aria-label="${Wp.glass} ml trinken. Lange drücken nimmt ein Glas zurück"><svg viewBox="0 0 76 92" aria-hidden="true"><defs><clipPath id="gclip"><path d="M10 8h56l-6 76H16z"/></clipPath></defs><rect x="0" y="${fillY}" width="76" height="92" fill="var(--water)" opacity=".85" clip-path="url(#gclip)"/><path d="M10 8h56l-6 76H16z" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linejoin="round"/></svg><span class="pl">+${Wp.glass}</span></button>
-        <div style="min-width:0"><div class="wv num">${fmt(ml / 1000, 2)} <span>von ${fmt(Wp.goal / 1000, 1)} l</span></div><div class="bar"><i style="width:${p * 100}%"></i></div><small>Tippen: +${Wp.glass} ml · lange drücken: eins zurück</small></div></div></div>`;
+        <div style="min-width:0"><div class="wv num">${fmt(ml / 1000, 2)} <span>von ${fmt(Wp.goal / 1000, 1)} l</span></div><div class="bar"><i style="width:${p * 100}%"></i></div><div class="wrow"><small>Glas antippen: +${Wp.glass} ml</small><button class="wminus" data-act="waterMinus" ${ml > 0 ? '' : 'disabled'} aria-label="${Wp.glass} ml abziehen">− ${Wp.glass} ml</button></div></div></div></div>`;
     }
     // Sonntags (letzter Tag der Woche): kleiner Wochenrückblick
     let sundayCard = '';
@@ -2164,6 +2164,7 @@ document.addEventListener('click', async (ev) => {
     case 'none': break;
     case 'swipeDel': { const row = a.closest('.swipe'); if (row) swipeDelete(row); break; }
     case 'ring': S.ringMode = a.dataset.v; renderKeep(); break;
+    case 'waterMinus': if (water(S.day) > 0) addWater(-S.prefs.water.glass); break;
     case 'vtab': {
       const fromOutside = S.stack[0].v !== 'verlauf';
       S.vtab = a.dataset.v;

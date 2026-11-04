@@ -1,5 +1,5 @@
 // Service Worker: macht die App offline nutzbar. Bei Änderungen VERSION erhöhen.
-const VERSION = 'kalorien-v1.4.0';
+const VERSION = 'kalorien-v1.4.1';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/db.js', 'js/basis.js', 'js/off.js', 'js/scanner.js', 'js/parser.js', 'js/ocr.js', 'js/goals.js', 'js/nutrients.js', 'js/ingredients.js', 'js/nutriscore.js', 'js/dishes.js', 'js/foodcam.js', 'js/util.js',
