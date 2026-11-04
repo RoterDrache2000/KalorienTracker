@@ -1,5 +1,5 @@
 // Service Worker: macht die App offline nutzbar. Bei Änderungen VERSION erhöhen.
-const VERSION = 'kalorien-v1.3.0';
+const VERSION = 'kalorien-v1.3.1';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/db.js', 'js/basis.js', 'js/off.js', 'js/scanner.js', 'js/parser.js', 'js/ocr.js', 'js/goals.js', 'js/nutrients.js', 'js/ingredients.js', 'js/nutriscore.js', 'js/dishes.js', 'js/foodcam.js', 'js/util.js',
@@ -11,7 +11,7 @@ const SHELL = [
 const RUNTIME = 'kalorien-runtime-v1';
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {

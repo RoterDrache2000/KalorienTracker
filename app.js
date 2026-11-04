@@ -11,7 +11,7 @@ import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip } from './dishes.js'
 import { LIFE, GOALS, DEFAULT_PROFILE, DEFAULT_SPLIT, calc, goalText, trend, checkProfile, migrateProfile, macroGrams } from './goals.js';
 import { $, $$, ic, fmt, num, num0, inVal, esc, today, addDays, dayDiff, dayLabel, dateLong, colorFor, initials, norm, download, parseD, dstr } from './util.js';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const screen = $('#screen');
 const MEALS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snacks'];
 const SRC = { Gericht: ['Gericht, Richtwert', 'bls'], OFF: ['Open Food Facts', 'off'], BLS: ['Grundlebensmittel', 'bls'], Eigen: ['Eigenes', 'eigen'], Rezept: ['Rezept', 'rezept'], Foto: ['Foto-Erfassung', 'foto'], Schnell: ['Schnell-Eintrag', 'foto'] };
@@ -395,6 +395,36 @@ const topbar = (title, right = '', backIcon = 'back') => `<div class="top">${S.s
 
 /* ---------- Bildschirme ---------- */
 const V = {};
+
+/* Updates: neue Version im Hintergrund holen und einen "Neu laden"-Knopf zeigen */
+function showUpdateBar() {
+  if ($('#updbar')) return;
+  const bar = document.createElement('div');
+  bar.id = 'updbar'; bar.className = 'updbar'; bar.setAttribute('role', 'status');
+  bar.innerHTML = `${ic('down')}<span>Neue Version verfügbar</span><button type="button">Neu laden</button>`;
+  bar.querySelector('button').onclick = () => location.reload();
+  document.body.appendChild(bar);
+}
+function initUpdates() {
+  const sw = navigator.serviceWorker, had = !!sw.controller;
+  sw.addEventListener('controllerchange', () => { if (had) showUpdateBar(); });
+  sw.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    S.swReg = reg;
+    const check = () => { if (isOnline()) reg.update().catch(() => {}); };
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+    setInterval(check, 30 * 60 * 1000);
+  }).catch(() => {});
+}
+async function checkUpdate() {
+  const reg = S.swReg || await navigator.serviceWorker?.getRegistration?.();
+  if (!reg) return toast('Updates gibt es nur in der installierten App.', true);
+  if (!isOnline()) return toast('Dafür brauchst du Internet.', true);
+  toast('Suche nach Update …');
+  try { await reg.update(); } catch { return toast('Update-Suche hat nicht geklappt.', true); }
+  await new Promise((r) => setTimeout(r, 2500));
+  if (reg.installing || reg.waiting || $('#updbar')) toast('Neue Version wird geladen. Gleich erscheint „Neu laden“.');
+  else toast(`Du hast die neueste Version (${APP_VERSION}).`);
+}
 
 /* Willkommen / erstes Einrichten */
 V.welcome = () => `<div class="pad welcome" style="padding-top:28px">
@@ -1674,6 +1704,7 @@ V.settings = {
         <div><b style="color:var(--ink)">Datenschutz:</b> Alle Daten liegen nur auf diesem Gerät. Fotos werden auf dem Gerät ausgewertet und nicht hochgeladen. Ins Internet gehen nur Barcode- und Suchanfragen an Open Food Facts.</div>
         <div>Das Tagesziel ist ein Richtwert und keine medizinische Beratung. Version ${APP_VERSION}.</div>
       </div>
+      <button class="btn sec" data-act="checkUpdate">${ic('down')} Nach Update suchen</button>
       <div class="setlist"><button class="setrow quiet" data-act="go" data-v="tips">${ic('bulb')}<span class="tx">Tipps und Videos</span>${ic('fwd')}</button></div>
     </div>`;
   },
@@ -2252,6 +2283,7 @@ document.addEventListener('click', async (ev) => {
     case 'mealPick': c.pick = a.dataset.k; $$('.guess').forEach((b) => { b.classList.toggle('on', b === a); b.setAttribute('aria-pressed', b === a); }); $('[data-act="mealNext"]')?.removeAttribute('disabled'); break;
     case 'aiPick': S.prefs.ai = a.dataset.v; await setSetting('prefs', S.prefs); if (c.shots?.length) recognizeMeal(c); break;
     case 'mealMore': S.mealAdd = true; { const inp = $(a.dataset.g ? '#mealGallery' : '#mealInput'); inp.value = ''; inp.click(); } break;
+    case 'checkUpdate': checkUpdate(); break;
     case 'mealNext': if (c.pick) go('mealportion', { k: c.pick }); break;
     case 'mealSize': c.g = +a.dataset.g; $('#mp-g').value = c.g; updateMealPortion(); break;
     case 'mealSearch': S.q = ''; S.showSearch = true; backToAdd(); setTimeout(() => $('#q')?.focus(), 80); break;
@@ -2665,7 +2697,7 @@ async function init() {
   if (fresh) toast('Tagesziel 2.000 kcal. Persönlich berechnen kannst du es unter Einstellungen > Kalorien-Rechner.');
 
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    initUpdates();
   }
   // Texterkennung einmal im Hintergrund laden, damit sie später offline klappt
   if (isOnline() && !localStorage.getItem('ocrReady')) {
