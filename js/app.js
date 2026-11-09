@@ -11,7 +11,7 @@ import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip } from './dishes.js'
 import { LIFE, GOALS, DEFAULT_PROFILE, DEFAULT_SPLIT, calc, goalText, trend, checkProfile, migrateProfile, macroGrams } from './goals.js';
 import { $, $$, ic, fmt, num, num0, inVal, esc, today, addDays, dayDiff, dayLabel, dateLong, colorFor, initials, norm, download, parseD, dstr } from './util.js';
 
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.5.0';
 const screen = $('#screen');
 const MEALS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snacks'];
 const SRC = { Gericht: ['Gericht, Richtwert', 'bls'], OFF: ['Open Food Facts', 'off'], BLS: ['Grundlebensmittel', 'bls'], Eigen: ['Eigenes', 'eigen'], Rezept: ['Rezept', 'rezept'], Foto: ['Foto-Erfassung', 'foto'], Schnell: ['Schnell-Eintrag', 'foto'] };
@@ -437,6 +437,26 @@ const topbar = (title, right = '', backIcon = 'back') => `<div class="top">${S.s
 /* ---------- Bildschirme ---------- */
 const V = {};
 
+/* Besondere Treffer in der Suche: Kalorien-Eintrag ohne Lebensmittel und Wasser */
+function specialResults(q) {
+  const l = q.toLowerCase().replace(',', '.');
+  let out = '';
+  const kc = l.match(/^(\d{1,4})\s*(kcal|kal|kalorien|cal)$/);
+  if (kc) out += `<button class="btn sec" data-act="quick" data-k="${kc[1]}">${ic('plus')} ${kc[1]} kcal als Schnell-Eintrag zu ${MEALS[S.addMeal]}</button>`;
+  else if (/^(kal|kcal|cal|dumm|schnell|kalorien)/.test(l) && l.length >= 3) out += `<div class="card special"><div class="cardh"><h3>Kalorien eintragen</h3><span class="k">ohne Lebensmittel</span></div>
+    <div class="qrow"><input id="qk" inputmode="numeric" placeholder="z. B. 450" aria-label="Kalorien"><span class="u">kcal</span><button class="btn" data-act="quickIn">Zu ${MEALS[S.addMeal]}</button></div>
+    <small>Praktisch im Restaurant oder wenn du nur die Kalorien kennst.</small></div>`;
+  const wm = l.match(/^(\d+(?:\.\d+)?)\s*(ml|l|liter)\b(?:\s*wasser)?$/);
+  const wq = /^(wass|water|trink|getr)/.test(l) && l.length >= 3;
+  if (S.prefs.water?.on !== false && (wm || wq)) {
+    const gl = S.prefs.water.glass, ml = wm ? Math.round(+wm[1] * (wm[2] === 'ml' ? 1 : 1000)) : 0;
+    const opts = [...new Set([ml, gl, 500, 1000].filter((x) => x > 0 && x <= 5000))];
+    out += `<div class="card special"><div class="cardh"><h3>${ic('drop')} Wasser</h3><span class="k num">heute ${fmt(water(S.day), 2)} l</span></div>
+      <div class="chips">${opts.map((v) => `<button class="chip wchip" data-act="qWater" data-ml="${v}">+ ${v >= 1000 ? fmt(v / 1000, 1) + ' l' : v + ' ml'}</button>`).join('')}${water(S.day) > 0 ? `<button class="chip" data-act="qWater" data-ml="${-gl}">− ${gl} ml</button>` : ''}</div></div>`;
+  }
+  return out;
+}
+
 /* Wasser-Glas: tippen = ein Glas mehr, lange drücken = eins zurück */
 let glassT = null, glassLong = false;
 async function addWater(ml) {
@@ -818,9 +838,10 @@ function searchResults() {
   }
   const quick = /^\d{1,4}$/.test(q) && !S.pickFor ? `<button class="btn sec" data-act="quick" data-k="${q}">${ic('plus')} ${q} kcal als Schnell-Eintrag zu ${MEALS[S.addMeal]}</button>` : '';
   if (quick) return quick + `<div class="empty" style="padding:0">Für Kalorien ohne Lebensmittel, z. B. im Restaurant.</div>`;
+  const special = S.pickFor ? '' : specialResults(q);
   const local = localSearch(q);
   const localIds = new Set(local.map((f) => f.id));
-  let html = `<div class="sec-h"><span class="lbl">Auf dem Gerät</span><span class="lbl num">${local.length}</span></div>`;
+  let html = special + `<div class="sec-h"><span class="lbl">Auf dem Gerät</span><span class="lbl num">${local.length}</span></div>`;
   html += local.length ? `<div class="list">${local.map(resultItem).join('')}</div>` : `<div class="empty" style="padding:0">Keine gespeicherten Treffer.</div>`;
   html += `<div class="sec-h"><span class="lbl">Open Food Facts</span>${S.online.status === 'done' && S.online.q === q ? `<span class="lbl num">${S.online.list.length}</span>` : ''}</div>`;
   if (!isOnline()) html += `<div class="notice">${ic('cloud')}<span><b>Kein Internet.</b> Du siehst nur Treffer, die auf dem Handy gespeichert sind. Die Online-Suche läuft wieder, sobald du verbunden bist.</span></div>`;
@@ -1078,7 +1099,7 @@ V.mealguess = {
     if (c.ask) return `${topbar('Was ist auf dem Teller?')}<div class="pad" style="padding-top:0">
       ${c.preview ? `<div class="photothumb"><img src="${c.preview}" alt="Dein Foto"></div>` : ''}
       <div class="card"><b>Welche Erkennung möchtest du?</b>
-        <p style="margin:0;color:var(--muted);font-size:14px">Die <b style="color:var(--ink)">große KI</b> kennt über 100 Gerichte, auch typische Restaurantgerichte. Sie wird einmalig geladen (ca. 150 MB, am besten im WLAN) und bleibt dann auf dem Handy.</p>
+        <p style="margin:0;color:var(--muted);font-size:14px">Die <b style="color:var(--ink)">große KI</b> kennt rund 1000 Gerichte, Beilagen und Getränke, auch typische Restaurantgerichte. Sie wird einmalig geladen (ca. 150 MB, am besten im WLAN) und bleibt dann auf dem Handy.</p>
         <p style="margin:0;color:var(--muted);font-size:14px">Die <b style="color:var(--ink)">kleine KI</b> ist schnell geladen (ca. 15 MB), erkennt aber weniger.</p>
         <button class="btn" data-act="aiPick" data-v="big">Große KI laden</button>
         <button class="btn sec" data-act="aiPick" data-v="small">Kleine KI nutzen</button>
@@ -1093,15 +1114,39 @@ V.mealguess = {
       ${(c.shots?.length || 0) < 3 ? `<div class="row3" style="display:flex;gap:8px"><button class="btn sec" data-act="mealMore" style="flex:1">${ic('cam')} Noch ein Foto aus anderem Winkel</button><button class="iconbtn" data-act="mealMore" data-g="1" aria-label="Weiteres Foto aus der Galerie">${ic('image')}</button></div>
       <p class="fine" style="margin:-4px 0 0;text-align:left">${c.shots?.length > 1 ? `${c.shots.length} Fotos zusammen ausgewertet. ` : ''}Mehr Winkel machen die Erkennung sicherer (bis zu 3 Fotos).</p>` : `<p class="fine" style="margin:0;text-align:left">3 Fotos zusammen ausgewertet.</p>`}
       <div class="lbl">Das könnte es sein</div>
-      ${list.length ? list.map(({ d, s }) => `<button class="guess ${c.pick === d.k ? 'on' : ''}" data-act="mealPick" data-k="${d.k}" aria-pressed="${c.pick === d.k}"><b>${esc(d.name)}</b><span class="p">${fmt(Math.max(1, Math.min(99, s * 100)))} %</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, s * 100))}%;background:var(--accent)"></i></span></button>`).join('')
+      ${list.length ? list.map(guessBtn).join('')
         : `<div class="notice">${ic('warn')}<span><b>Kein Gericht erkannt.</b> Die Erkennung kennt vor allem bekannte Gerichte wie Pizza, Burger, Nudeln, Suppe, Obst und Gemüse. Such das Gericht einfach selbst.</span></div>`}
+      ${c.extras?.length ? `<div class="lbl">Auch auf dem Teller erkannt</div>${c.extras.map(guessBtn).join('')}` : ''}
+      <div class="lbl">Noch etwas dabei?</div>
+      <div class="chips sidechips">${SIDE_CHIPS.filter((k) => DISH_MAP.has(k) && !list.some((g) => g.d.k === k) && !c.extras?.some((g) => g.d.k === k)).map((k) => `<button class="chip ${c.sel?.includes(k) ? 'on' : ''}" data-act="mealPick" data-k="${k}" aria-pressed="${!!c.sel?.includes(k)}">${esc(DISH_MAP.get(k).name)}</button>`).join('')}</div>
+      <p class="fine" style="margin:0;text-align:left">Tippe alles an, was auf dem Teller ist. Jedes Teil bekommt danach seine eigene Portion.</p>
       <button class="btn sec" data-act="mealSearch">${ic('search')} Nichts davon? Selbst suchen</button>
       ${MEAL_DISCLAIMER}
       <p class="fine" style="text-align:left;margin:0">Die Erkennung läuft auf dem Handy (${c.big ? 'große KI' : 'kleine KI'}). Die Prozente sagen, wie sicher sie sich ist.${c.big ? '' : ' Hausmannskost wie Rouladen oder Eintopf erkennt sie oft nicht genau.'}</p>
     </div>
-    ${list.length ? `<div class="foot"><button class="btn" data-act="mealNext" ${c.pick ? '' : 'disabled'}>Weiter zur Portion</button></div>` : ''}`;
+    <div class="foot"><button class="btn" data-act="mealNext" ${c.sel?.length ? '' : 'disabled'}>${mealNextLabel(c)}</button></div>`;
   },
 };
+const SIDE_CHIPS = ['pommes', 'beilagensalat', 'reis', 'brot_scheibe', 'ketchup', 'mayo', 'cola', 'wasser'];
+const mealNextLabel = (c) => (c.sel?.length > 1 ? `Weiter zur Portion (${c.sel.length} Teile)` : 'Weiter zur Portion');
+function guessBtn({ d, s }) {
+  const on = !!cur().sel?.includes(d.k);
+  return `<button class="guess ${on ? 'on' : ''}" data-act="mealPick" data-k="${d.k}" aria-pressed="${on}"><b>${on ? ic('check') : ''}${esc(d.name)}</b><span class="p">${fmt(Math.max(1, Math.min(99, s * 100)))} %</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, s * 100))}%;background:var(--accent)"></i></span></button>`;
+}
+// Ist Gericht x schon im Hauptgericht enthalten (oder umgekehrt)? z. B. „Pommes frites“ in „Currywurst mit Pommes“
+const nameWords = (n) => n.toLowerCase().split(/[^a-zäöüß]+/).filter((w) => w.length >= 4 && !['gegart', 'gekocht'].includes(w));
+const overlaps = (a, b) => nameWords(a.name).some((w) => b.name.toLowerCase().includes(w)) || nameWords(b.name).some((w) => a.name.toLowerCase().includes(w));
+// Treffer aus den Bildausschnitten -> zusätzliche Teile auf dem Teller
+function mealExtras(guess, hits) {
+  const main = guess[0]?.d, out = [];
+  for (const h of [...hits.values()].sort((a, b) => b.s - a.s)) {
+    if (h.s < 0.15 || out.length >= 3) continue;
+    if (main && (h.d.k === main.k || overlaps(h.d, main))) continue;
+    if (out.some((o) => o.d.k === h.d.k || overlaps(o.d, h.d))) continue;
+    out.push(h);
+  }
+  return out;
+}
 const plateSvg = (r) => `<svg viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="26" fill="var(--surface2)" stroke="var(--line)" stroke-width="2"/><circle cx="28" cy="28" r="${r}" fill="#D9B45E"/><circle cx="28" cy="28" r="${r * 0.5}" fill="#B5482B"/></svg>`;
 V.mealportion = {
   html(c) {
@@ -1110,7 +1155,7 @@ V.mealportion = {
     const g = c.g ?? d.p[1]; c.g = g;
     if (c.safe == null) c.safe = !!S.prefs.safety;
     const n = nutOf(d.n, mealG(c));
-    return `${topbar('Wie viel war es?')}
+    return `${topbar(c.total > 1 ? `Wie viel war es? (${c.idx} von ${c.total})` : 'Wie viel war es?')}
     <div class="pad" style="padding-top:0">
       <div class="hero"><span class="thumb" style="background:var(--warn-soft);color:var(--warn)">${ic('plate')}</span><div style="min-width:0"><h3>${esc(d.name)}</h3><div class="s">zu ${MEALS[S.addMeal]} · ${dayLabel(S.day)} <span class="est" style="margin:0">geschätzt</span></div></div></div>
       <div class="card"><div class="lbl">Portion</div>
@@ -1123,7 +1168,7 @@ V.mealportion = {
       </div>
       ${MEAL_DISCLAIMER}
     </div>
-    <div class="foot"><button class="btn" data-act="mealSave">${ic('check')} Als Schätzung eintragen</button></div>`;
+    <div class="foot"><button class="btn" data-act="mealSave">${ic('check')} ${c.queue?.length ? 'Eintragen und weiter' : 'Als Schätzung eintragen'}</button></div>`;
   },
 };
 const mealG = (c) => (c.safe ? Math.round(c.g * 1.1) : c.g);
@@ -1146,7 +1191,7 @@ async function runMealCam(file) {
     const cam = await import('./foodcam.js');
     const shot = await cam.prepare(file);
     if (cur() !== me) return;
-    me.shots.push({ file, canvas: shot.canvas, preview: shot.preview });
+    me.shots.push({ file, canvas: shot.canvas, preview: shot.preview, regions: shot.regions });
     me.preview = me.shots[0].preview;
     if (!S.prefs.ai) { me.busy = false; me.ask = true; render(true); return; }
     await recognizeMeal(me);
@@ -1163,7 +1208,7 @@ async function recognizeMeal(me) {
   const step = (msg, pct) => { me.msg = msg; me.pct = pct; const m = $('#mgMsg'), b = $('#mgBar'); if (m) m.textContent = msg; if (b) b.style.width = pct + '%'; };
   const cam = await import('./foodcam.js');
   const big = S.prefs.ai === 'big';
-  if (me.big !== big || !me.acc) { me.big = big; me.acc = null; me.done = 0; }
+  if (me.big !== big || !me.acc) { me.big = big; me.acc = null; me.done = 0; me.hits = new Map(); }
   me.busy = true; me.ask = false; me.err = null; render(true);
   const prog = (f) => { if (cur() === me) step(`Bilderkennung wird geladen … ${Math.round(f * 100)} %`, 8 + f * 80); };
   const add = (probs) => { me.acc = me.acc ? me.acc.map((x, i) => x + probs[i]) : Array.from(probs); me.done++; };
@@ -1177,16 +1222,30 @@ async function recognizeMeal(me) {
           console.error(e);
           if (cur() !== me) return;
           toast('Die große KI ließ sich nicht laden. Ich nehme die kleine.', true);
-          me.big = false; me.acc = null; me.done = 0; render(true);
+          me.big = false; me.acc = null; me.done = 0; me.hits = new Map(); render(true);
+          continue;
         }
       } else add(await cam.classify(sh.canvas, prog));
       if (cur() !== me) return;
+      // Bildausschnitte: Beilagen und weitere Teile finden
+      for (const [ri, r] of (sh.regions || []).entries()) {
+        step(`Teller wird abgesucht … ${ri + 1} von ${sh.regions.length}`, 90 + ri);
+        try {
+          const probs = me.big ? await cam.classifyClip(r.big, CLIP_TEXTS) : await cam.classify(r.sq);
+          for (const h of (me.big ? rankClip(probs, 2) : rankDishes(probs, 2))) { const o = me.hits.get(h.d.k); if (!o || o.s < h.s) me.hits.set(h.d.k, h); }
+        } catch (e) { console.error(e); break; } // Ausschnitte sind ein Extra: ohne sie geht es trotzdem weiter
+        if (cur() !== me) return;
+      }
       if (me.shots.length > 1) step(`Foto ${me.done} von ${me.shots.length} erkannt …`, 90);
     }
     step('Gericht wird erkannt …', 95);
     const avg = me.acc.map((x) => x / me.done);
     me.guess = me.big ? rankClip(avg, 3) : rankDishes(avg, 3);
-    me.pick = me.guess[0]?.d.k || null; me.busy = false;
+    me.extras = mealExtras(me.guess, me.hits);
+    me.guess = me.guess.filter((g, i) => !i || !me.extras.some((x) => x.d.k === g.d.k)); // nicht doppelt anzeigen
+    const keep = (me.sel || []).filter((k) => SIDE_CHIPS.includes(k)); // selbst angetippte Beilagen bleiben
+    me.sel = [...new Set([...(me.guess[0] ? [me.guess[0].d.k] : []), ...me.extras.filter((x) => x.s >= 0.3).map((x) => x.d.k), ...keep])];
+    me.busy = false;
     render(true);
   } catch (e) { mealFail(me, e); }
 }
@@ -2143,6 +2202,7 @@ document.addEventListener('touchmove', (e) => { if (e.touches.length > 1 || (e.s
 document.addEventListener('keydown', (ev) => {
   const t = ev.target;
   if ((ev.key === 'Enter' || ev.key === ' ') && t.getAttribute?.('role') === 'button' && t.dataset.act) { ev.preventDefault(); t.click(); }
+  if (ev.key === 'Enter' && t.id === 'qk') { ev.preventDefault(); $('[data-act="quickIn"]')?.click(); }
 });
 document.addEventListener('click', async (ev) => {
   const tab = ev.target.closest('[data-tab]');
@@ -2164,6 +2224,12 @@ document.addEventListener('click', async (ev) => {
     case 'none': break;
     case 'swipeDel': { const row = a.closest('.swipe'); if (row) swipeDelete(row); break; }
     case 'ring': S.ringMode = a.dataset.v; renderKeep(); break;
+    case 'qWater': {
+      const ml = +a.dataset.ml, v = Math.max(0, water(S.day) + ml / 1000);
+      await addMeasure('water', S.day, v); refreshResults();
+      toast(ml > 0 ? `${ml} ml Wasser eingetragen · heute ${fmt(v, 2)} l` : `${-ml} ml zurückgenommen`);
+      break;
+    }
     case 'waterMinus': if (water(S.day) > 0) addWater(-S.prefs.water.glass); break;
     case 'vtab': {
       const fromOutside = S.stack[0].v !== 'verlauf';
@@ -2409,6 +2475,12 @@ document.addEventListener('click', async (ev) => {
     case 'setMeal': S.addMeal = +a.dataset.m; closeSheet(); render(); break;
     case 'tab': S.addTab = a.dataset.t; refreshResults(); $$('#tabs .chip').forEach((b) => b.classList.toggle('on', b === a)); break;
     case 'retrySearch': S.online.q = ''; scheduleOnline(true); break;
+    case 'quickIn': {
+      const k = Math.round(num($('#qk')?.value || ''));
+      if (!(k > 0 && k < 10000)) { toast('Bitte eine Kalorienzahl eingeben', true); $('#qk')?.focus(); break; }
+      a.dataset.k = k;
+    }
+    // fällt durch zum Schnell-Eintrag
     case 'quick': {
       const k = num(a.dataset.k);
       const e = { id: uid(), date: S.day, meal: S.addMeal, t: Date.now(), foodId: 'schnell', name: 'Schnell-Eintrag', brand: '', src: 'Schnell', g: k, n: { ...emptyN(), kcal: 100 }, portions: [] };
@@ -2471,18 +2543,29 @@ document.addEventListener('click', async (ev) => {
     case 'mealPhoto': if (c.v === 'mealguess') replace('mealcam'); else go('mealcam'); break;
     case 'mealShoot': $('#mealInput').value = ''; $('#mealInput').click(); break;
     case 'mealGallery': $('#mealGallery').value = ''; $('#mealGallery').click(); break;
-    case 'mealPick': c.pick = a.dataset.k; $$('.guess').forEach((b) => { b.classList.toggle('on', b === a); b.setAttribute('aria-pressed', b === a); }); $('[data-act="mealNext"]')?.removeAttribute('disabled'); break;
+    case 'mealPick': {
+      const k = a.dataset.k; c.sel = c.sel || [];
+      c.sel = c.sel.includes(k) ? c.sel.filter((x) => x !== k) : [...c.sel, k];
+      renderKeep(); break;
+    }
     case 'aiPick': S.prefs.ai = a.dataset.v; await setSetting('prefs', S.prefs); if (c.shots?.length) recognizeMeal(c); break;
     case 'mealMore': S.mealAdd = true; { const inp = $(a.dataset.g ? '#mealGallery' : '#mealInput'); inp.value = ''; inp.click(); } break;
     case 'checkUpdate': checkUpdate(); break;
-    case 'mealNext': if (c.pick) go('mealportion', { k: c.pick }); break;
+    case 'mealNext': if (c.sel?.length) go('mealportion', { k: c.sel[0], queue: c.sel.slice(1), total: c.sel.length, idx: 1, saved: [] }); break;
     case 'mealSize': c.g = +a.dataset.g; $('#mp-g').value = c.g; updateMealPortion(); break;
     case 'mealSearch': S.q = ''; S.showSearch = true; backToAdd(); setTimeout(() => $('#q')?.focus(), 80); break;
     case 'mealSave': {
-      const d = DISH_MAP.get(c.k), f = dishFood(d), g = mealG(c);
-      const e = { id: uid(), date: S.day, meal: S.addMeal, t: Date.now(), foodId: f.id, name: f.name, brand: '', src: 'Gericht', img: '', g, n: { ...f.n }, portions: f.portions, est: true };
-      await db.put('entries', e); (await loadDay(S.day)).push(e);
-      S.q = ''; root('heute'); toast(`${d.name} als Schätzung zu ${MEALS[e.meal]} eingetragen`);
+      const d = DISH_MAP.get(c.k), g = mealG(c);
+      if (d.k === 'wasser') await addMeasure('water', S.day, water(S.day) + g / 1000); // Wasser zählt beim Wasser-Tracker
+      else {
+        const f = dishFood(d);
+        const e = { id: uid(), date: S.day, meal: S.addMeal, t: Date.now(), foodId: f.id, name: f.name, brand: '', src: 'Gericht', img: '', g, n: { ...f.n }, portions: f.portions, est: true };
+        await db.put('entries', e); (await loadDay(S.day)).push(e);
+      }
+      const saved = [...(c.saved || []), d.name];
+      if (c.queue?.length) { replace('mealportion', { k: c.queue[0], queue: c.queue.slice(1), total: c.total, idx: c.idx + 1, saved, safe: c.safe }); break; }
+      S.q = ''; root('heute');
+      toast(saved.length > 1 ? `${saved.length} Teile als Schätzung zu ${MEALS[S.addMeal]} eingetragen` : `${d.name} als Schätzung zu ${MEALS[S.addMeal]} eingetragen`);
       break;
     }
 

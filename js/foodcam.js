@@ -24,6 +24,7 @@ export function loadModel(onProgress) {
   return modelP;
 }
 
+const REGIONS = [[0, 0, 0.6, 1], [0.4, 0, 0.6, 1], [0, 0, 1, 0.6], [0, 0.4, 1, 0.6]];
 // Foto -> quadratischer Ausschnitt aus der Mitte, 224 × 224 Pixel
 export async function prepare(file) {
   const bmp = await createImageBitmap(file);
@@ -33,8 +34,19 @@ export async function prepare(file) {
   const pv = document.createElement('canvas'), k = Math.min(1, 480 / Math.max(bmp.width, bmp.height));
   pv.width = Math.round(bmp.width * k); pv.height = Math.round(bmp.height * k);
   pv.getContext('2d').drawImage(bmp, 0, 0, pv.width, pv.height);
+  // Ausschnitte (linke/rechte, obere/untere Bildhälfte mit Überlappung): so findet die Erkennung
+  // auch Beilagen neben dem Hauptgericht, z. B. Pommes neben dem Burger.
+  const regions = REGIONS.map(([x, y, w, h]) => {
+    const sx = x * bmp.width, sy = y * bmp.height, sw = w * bmp.width, sh = h * bmp.height;
+    const q = Math.min(sw, sh), sq = document.createElement('canvas'); sq.width = sq.height = 224;
+    sq.getContext('2d').drawImage(bmp, sx + (sw - q) / 2, sy + (sh - q) / 2, q, q, 0, 0, 224, 224);
+    const m = Math.min(1, 336 / Math.max(sw, sh)), big = document.createElement('canvas');
+    big.width = Math.round(sw * m); big.height = Math.round(sh * m);
+    big.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, big.width, big.height);
+    return { sq, big };
+  });
   bmp.close?.();
-  return { canvas: cv, preview: pv.toDataURL('image/jpeg', 0.8) };
+  return { canvas: cv, preview: pv.toDataURL('image/jpeg', 0.8), regions };
 }
 
 // Wahrscheinlichkeiten für alle 1001 Bildklassen
@@ -111,10 +123,10 @@ export function loadClip(texts, onProgress) {
   return clipP;
 }
 
-// Foto -> Wahrscheinlichkeit je Text (Summe 1)
+// Foto (Datei oder Canvas-Ausschnitt) -> Wahrscheinlichkeit je Text (Summe 1)
 export async function classifyClip(file, texts, onProgress) {
   const { emb, proc, vm } = await loadClip(texts, onProgress);
-  const img = await T.RawImage.fromBlob(file);
+  const img = file instanceof Blob ? await T.RawImage.fromBlob(file) : T.RawImage.fromCanvas(file).rgb();
   const { image_embeds } = await vm(await proc(img));
   const [v] = normRows(image_embeds.data, 1, image_embeds.dims[1]);
   const logits = emb.map((t) => 100 * t.reduce((a, x, i) => a + x * v[i], 0));
