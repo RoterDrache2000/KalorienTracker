@@ -11,7 +11,7 @@ import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip } from './dishes.js'
 import { LIFE, GOALS, DEFAULT_PROFILE, DEFAULT_SPLIT, calc, goalText, trend, checkProfile, migrateProfile, macroGrams } from './goals.js';
 import { $, $$, ic, fmt, num, num0, inVal, esc, today, addDays, dayDiff, dayLabel, dateLong, colorFor, initials, norm, download, parseD, dstr } from './util.js';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.5.1';
 const screen = $('#screen');
 const MEALS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snacks'];
 const SRC = { Gericht: ['Gericht, Richtwert', 'bls'], OFF: ['Open Food Facts', 'off'], BLS: ['Grundlebensmittel', 'bls'], Eigen: ['Eigenes', 'eigen'], Rezept: ['Rezept', 'rezept'], Foto: ['Foto-Erfassung', 'foto'], Schnell: ['Schnell-Eintrag', 'foto'] };
@@ -1122,7 +1122,7 @@ V.mealguess = {
       <p class="fine" style="margin:0;text-align:left">Tippe alles an, was auf dem Teller ist. Jedes Teil bekommt danach seine eigene Portion.</p>
       <button class="btn sec" data-act="mealSearch">${ic('search')} Nichts davon? Selbst suchen</button>
       ${MEAL_DISCLAIMER}
-      <p class="fine" style="text-align:left;margin:0">Die Erkennung läuft auf dem Handy (${c.big ? 'große KI' : 'kleine KI'}). Die Prozente sagen, wie sicher sie sich ist.${c.big ? '' : ' Hausmannskost wie Rouladen oder Eintopf erkennt sie oft nicht genau.'}</p>
+      <p class="fine" style="text-align:left;margin:0">Die Erkennung läuft auf dem Handy (${c.big ? 'große KI' : 'kleine KI'}). Die Prozente vergleichen die Vorschläge untereinander.${c.big ? '' : ' Hausmannskost wie Rouladen oder Eintopf erkennt sie oft nicht genau.'}</p>
     </div>
     <div class="foot"><button class="btn" data-act="mealNext" ${c.sel?.length ? '' : 'disabled'}>${mealNextLabel(c)}</button></div>`;
   },
@@ -1136,9 +1136,17 @@ function guessBtn({ d, s }) {
 // Ist Gericht x schon im Hauptgericht enthalten (oder umgekehrt)? z. B. „Pommes frites“ in „Currywurst mit Pommes“
 const nameWords = (n) => n.toLowerCase().split(/[^a-zäöüß]+/).filter((w) => w.length >= 4 && !['gegart', 'gekocht'].includes(w));
 const overlaps = (a, b) => nameWords(a.name).some((w) => b.name.toLowerCase().includes(w)) || nameWords(b.name).some((w) => a.name.toLowerCase().includes(w));
-// Treffer aus den Bildausschnitten -> zusätzliche Teile auf dem Teller
-function mealExtras(guess, hits) {
-  const main = guess[0]?.d, out = [];
+const SIDE_RE = /^(Pommes|Süßkartoffel-Pommes|Curly|Kartoffelecken|Zwiebelringe|Beilagensalat|Gemischter Salat|Krautsalat|Gurkensalat|Tomatensalat|Reis|Basmatireis|Baguette|Brot|Brötchen|Fladenbrot|Naan|Knoblauchbrot|Kräuterbaguette|Ketchup|Mayonnaise|Senf|Knoblauchsoße|BBQ-Soße|Kräuterquark|Tzatziki|Cola|Limonade|Wasser|Sprudelwasser|Bier|Pils|Weißbier|Rotwein|Weißwein|Saft|Apfelschorle|Eistee)/;
+// Treffer aus den Bildausschnitten -> zusätzliche Teile auf dem Teller. Ein Teil zählt nur, wenn es in seinem
+// Ausschnitt sicherer erkannt wird als das Hauptgericht (z. B. die Pommes-Hälfte neben dem Burger).
+function mealExtras(guess, crops) {
+  const main = guess[0]?.d, out = [], hits = new Map();
+  for (const crop of crops || []) {
+    const mainS = main ? crop.find((x) => x.d.k === main.k)?.s || 0 : 0;
+    const h = crop.find((x) => !main || (x.d.k !== main.k && !overlaps(x.d, main)));
+    const ok = h && (h.s > mainS || (SIDE_RE.test(h.d.name) && h.s >= 0.25)); // Beilagen und Getränke dürfen etwas unsicherer sein
+    if (ok && (!hits.has(h.d.k) || hits.get(h.d.k).s < h.s)) hits.set(h.d.k, h);
+  }
   for (const h of [...hits.values()].sort((a, b) => b.s - a.s)) {
     if (h.s < 0.15 || out.length >= 3) continue;
     if (main && (h.d.k === main.k || overlaps(h.d, main))) continue;
@@ -1208,7 +1216,7 @@ async function recognizeMeal(me) {
   const step = (msg, pct) => { me.msg = msg; me.pct = pct; const m = $('#mgMsg'), b = $('#mgBar'); if (m) m.textContent = msg; if (b) b.style.width = pct + '%'; };
   const cam = await import('./foodcam.js');
   const big = S.prefs.ai === 'big';
-  if (me.big !== big || !me.acc) { me.big = big; me.acc = null; me.done = 0; me.hits = new Map(); }
+  if (me.big !== big || !me.acc) { me.big = big; me.acc = null; me.done = 0; me.crops = []; }
   me.busy = true; me.ask = false; me.err = null; render(true);
   const prog = (f) => { if (cur() === me) step(`Bilderkennung wird geladen … ${Math.round(f * 100)} %`, 8 + f * 80); };
   const add = (probs) => { me.acc = me.acc ? me.acc.map((x, i) => x + probs[i]) : Array.from(probs); me.done++; };
@@ -1222,7 +1230,7 @@ async function recognizeMeal(me) {
           console.error(e);
           if (cur() !== me) return;
           toast('Die große KI ließ sich nicht laden. Ich nehme die kleine.', true);
-          me.big = false; me.acc = null; me.done = 0; me.hits = new Map(); render(true);
+          me.big = false; me.acc = null; me.done = 0; me.crops = []; render(true);
           continue;
         }
       } else add(await cam.classify(sh.canvas, prog));
@@ -1232,7 +1240,7 @@ async function recognizeMeal(me) {
         step(`Teller wird abgesucht … ${ri + 1} von ${sh.regions.length}`, 90 + ri);
         try {
           const probs = me.big ? await cam.classifyClip(r.big, CLIP_TEXTS) : await cam.classify(r.sq);
-          for (const h of (me.big ? rankClip(probs, 2) : rankDishes(probs, 2))) { const o = me.hits.get(h.d.k); if (!o || o.s < h.s) me.hits.set(h.d.k, h); }
+          me.crops.push(me.big ? rankClip(probs, 5) : rankDishes(probs, 5));
         } catch (e) { console.error(e); break; } // Ausschnitte sind ein Extra: ohne sie geht es trotzdem weiter
         if (cur() !== me) return;
       }
@@ -1241,7 +1249,7 @@ async function recognizeMeal(me) {
     step('Gericht wird erkannt …', 95);
     const avg = me.acc.map((x) => x / me.done);
     me.guess = me.big ? rankClip(avg, 3) : rankDishes(avg, 3);
-    me.extras = mealExtras(me.guess, me.hits);
+    me.extras = mealExtras(me.guess, me.crops);
     me.guess = me.guess.filter((g, i) => !i || !me.extras.some((x) => x.d.k === g.d.k)); // nicht doppelt anzeigen
     const keep = (me.sel || []).filter((k) => SIDE_CHIPS.includes(k)); // selbst angetippte Beilagen bleiben
     me.sel = [...new Set([...(me.guess[0] ? [me.guess[0].d.k] : []), ...me.extras.filter((x) => x.s >= 0.3).map((x) => x.d.k), ...keep])];
