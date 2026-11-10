@@ -1,5 +1,5 @@
 // Service Worker: macht die App offline nutzbar. Bei Änderungen VERSION erhöhen.
-const VERSION = 'kalorien-v1.5.1';
+const VERSION = 'kalorien-v1.6.0';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/db.js', 'js/basis.js', 'js/off.js', 'js/scanner.js', 'js/parser.js', 'js/ocr.js', 'js/goals.js', 'js/nutrients.js', 'js/ingredients.js', 'js/nutriscore.js', 'js/dishes.js', 'js/foodcam.js', 'js/util.js',
@@ -17,7 +17,9 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION && k !== RUNTIME).map((k) => caches.delete(k))))
+      // Nur alte App-Versionen löschen. KI-Modelle (transformers-cache), vorbereitete Beschreibungen (kt-clip)
+      // und große Dateien (RUNTIME) bleiben bei Updates erhalten und werden nicht neu geladen.
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('kalorien-v') && k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

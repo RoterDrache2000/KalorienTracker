@@ -17,6 +17,27 @@ export const MICRO = [
   { k: 'fe', l: 'Eisen', u: 'mg', off: 'iron', f: 1e3, ref: 14, d: 1 },
   { k: 'zn', l: 'Zink', u: 'mg', off: 'zinc', f: 1e3, ref: 10, d: 1 },
   { k: 'k', l: 'Kalium', u: 'mg', off: 'potassium', f: 1e3, ref: 2000 },
+  // x: seltener auf Packungen, vor allem für Supplements (nicht in der Liste „Keine Angaben“)
+  { k: 'niacin', l: 'Niacin', u: 'mg', off: 'vitamin-pp', f: 1e3, ref: 16, d: 1, x: 1 },
+  { k: 'panto', l: 'Pantothensäure', u: 'mg', off: 'pantothenic-acid', f: 1e3, ref: 6, d: 1, x: 1 },
+  { k: 'biotin', l: 'Biotin', u: 'µg', off: 'biotin', f: 1e6, ref: 50, x: 1 },
+  { k: 'p', l: 'Phosphor', u: 'mg', off: 'phosphorus', f: 1e3, ref: 700, x: 1 },
+  { k: 'jod', l: 'Jod', u: 'µg', off: 'iodine', f: 1e6, ref: 150, x: 1 },
+  { k: 'se', l: 'Selen', u: 'µg', off: 'selenium', f: 1e6, ref: 55, x: 1 },
+  { k: 'cu', l: 'Kupfer', u: 'mg', off: 'copper', f: 1e3, ref: 1, d: 2, x: 1 },
+  { k: 'mn', l: 'Mangan', u: 'mg', off: 'manganese', f: 1e3, ref: 2, d: 2, x: 1 },
+  { k: 'cr', l: 'Chrom', u: 'µg', off: 'chromium', f: 1e6, ref: 40, x: 1 },
+  { k: 'mo', l: 'Molybdän', u: 'µg', off: 'molybdenum', f: 1e6, ref: 50, x: 1 },
+  { k: 'fl', l: 'Fluorid', u: 'mg', off: 'fluoride', f: 1e3, ref: 3.5, d: 1, x: 1 },
+];
+// Wirkstoffe nur für Supplements, ohne offiziellen Referenzwert (die App zählt nur die Tagesmenge)
+export const SUPP_EXTRA = [
+  { k: 'bor', l: 'Bor', u: 'mg', f: 1e3, d: 1 },
+  { k: 'si', l: 'Silizium', u: 'mg', f: 1e3 },
+  { k: 'vanad', l: 'Vanadium', u: 'µg', f: 1e6 },
+  { k: 'omega3', l: 'Omega-3 (EPA + DHA)', u: 'mg', f: 1e3 },
+  { k: 'q10', l: 'Coenzym Q10', u: 'mg', f: 1e3 },
+  { k: 'kreatin', l: 'Kreatin', u: 'g', f: 1, d: 1 },
 ];
 export const MKEYS = MICRO.map((m) => m.k);
 

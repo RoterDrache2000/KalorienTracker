@@ -49,16 +49,18 @@ export async function prepare(file) {
   return { canvas: cv, preview: pv.toDataURL('image/jpeg', 0.8), regions };
 }
 
-// Wahrscheinlichkeiten für alle 1001 Bildklassen
+// Wahrscheinlichkeiten für alle 1001 Bildklassen. probs.vec = Bild-Fingerabdruck (1280 Werte, normiert) zum Lernen.
 export async function classify(canvas, onProgress) {
   const model = await loadModel(onProgress);
   const tf = window.tf;
-  const out = tf.tidy(() => {
+  const [out, feat] = tf.tidy(() => {
     const x = tf.browser.fromPixels(canvas).toFloat().div(255).expandDims(0);
-    return tf.softmax(model.execute(x, 'module_apply_default/MobilenetV2/Logits/output').squeeze()); // Modell liefert Logits
+    const [lo, pool] = model.execute(x, ['module_apply_default/MobilenetV2/Logits/output', 'module_apply_default/MobilenetV2/Logits/AvgPool']);
+    return [tf.softmax(lo.squeeze()), pool.reshape([-1])]; // Modell liefert Logits
   });
-  const probs = await out.data();
-  out.dispose();
+  const probs = await out.data(), f = await feat.data();
+  out.dispose(); feat.dispose();
+  probs.vec = normRows(f, 1, f.length)[0];
   return probs;
 }
 
@@ -68,7 +70,8 @@ export async function classify(canvas, onProgress) {
 const CLIP = 'Xenova/clip-vit-base-patch32';
 export const CLIP_MB = 150;
 let clipP = null, T = null;
-const embCacheKey = (texts) => 'clip-emb-' + texts.length + '-' + [...texts.join('|')].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7);
+// Vorbereitete Beschreibungen werden je Text gespeichert: Kommen neue Gerichte dazu, wird nur deren Text neu berechnet.
+const EMB_KEY = 'clip-emb-map-v1';
 
 function normRows(data, n, dim) {
   const out = [];
@@ -91,6 +94,7 @@ async function cachePut(key, val) {
 export function loadClip(texts, onProgress) {
   if (!clipP) {
     clipP = (async () => {
+      navigator.storage?.persist?.().catch(() => {}); // bittet den Browser, das große Modell nicht wegzuräumen
       T = await import(new URL('../vendor/transformers/transformers.min.js', import.meta.url).href);
       T.env.allowLocalModels = false;
       const files = {};
@@ -100,21 +104,31 @@ export function loadClip(texts, onProgress) {
         let l = 0, t = 0; for (const [a, b] of Object.values(files)) { l += a; t += b; }
         onProgress?.(Math.min(0.99, l / Math.max(t, CLIP_MB * 1e6 * (texts.cached ? 0.6 : 1))));
       };
-      const key = embCacheKey(texts);
-      let emb = await cacheGet(key);
-      texts.cached = !!emb;
-      if (!emb) {
+      let map = await cacheGet(EMB_KEY), migrated = false;
+      if (!map) { // Übernahme aus Version 1.5.1 und älter (dort ein Block pro Text-Liste), damit nichts neu berechnet wird
+        map = {};
+        const old = await cacheGet('clip-emb-' + texts.length + '-' + [...texts.join('|')].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7));
+        if (Array.isArray(old) && old.length === texts.length) { texts.forEach((t, i) => { map[t] = old[i]; }); migrated = true; }
+      }
+      const missing = [...new Set(texts.filter((t) => !map[t]))];
+      texts.cached = !missing.length;
+      if (missing.length) {
         const tok = await T.AutoTokenizer.from_pretrained(CLIP);
         const tm = await T.CLIPTextModelWithProjection.from_pretrained(CLIP, { dtype: 'q8', progress_callback });
-        emb = [];
-        for (let i = 0; i < texts.length; i += 32) { // in Paketen, damit das Handy nicht zu viel Speicher braucht
-          const part = texts.slice(i, i + 32);
+        for (let i = 0; i < missing.length; i += 32) { // in Paketen, damit das Handy nicht zu viel Speicher braucht
+          const part = missing.slice(i, i + 32);
           const { text_embeds } = await tm(tok(part, { padding: true, truncation: true }));
-          emb.push(...normRows(text_embeds.data, part.length, text_embeds.dims[1]));
+          normRows(text_embeds.data, part.length, text_embeds.dims[1]).forEach((v, j) => { map[part[j]] = v.map((x) => +x.toFixed(5)); });
+          onProgress?.(0.5 + 0.4 * Math.min(1, (i + 32) / missing.length), `Gerichte werden vorbereitet … ${Math.min(missing.length, i + 32)} von ${missing.length}`);
         }
         await tm.dispose?.();
-        await cachePut(key, emb);
       }
+      if (missing.length || migrated) {
+        const keep = {}; for (const t of texts) keep[t] = map[t]; // alte, nicht mehr genutzte Texte fallen weg
+        await cachePut(EMB_KEY, keep);
+        try { const c = await caches.open('kt-clip'); for (const r of await c.keys()) if (!r.url.endsWith('/' + EMB_KEY)) await c.delete(r); } catch { /* egal */ }
+      }
+      const emb = texts.map((t) => map[t]);
       const proc = await T.AutoProcessor.from_pretrained(CLIP);
       const vm = await T.CLIPVisionModelWithProjection.from_pretrained(CLIP, { dtype: 'q8', progress_callback });
       return { emb, proc, vm };
@@ -131,5 +145,7 @@ export async function classifyClip(file, texts, onProgress) {
   const [v] = normRows(image_embeds.data, 1, image_embeds.dims[1]);
   const logits = emb.map((t) => 100 * t.reduce((a, x, i) => a + x * v[i], 0));
   const m = Math.max(...logits), ex = logits.map((x) => Math.exp(x - m)), s = ex.reduce((a, b) => a + b, 0);
-  return ex.map((x) => x / s);
+  const probs = ex.map((x) => x / s);
+  probs.vec = v; // Bild-Fingerabdruck (normiert) zum Lernen
+  return probs;
 }

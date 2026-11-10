@@ -4,14 +4,14 @@ import { BASIS } from './basis.js';
 import * as OFF from './off.js';
 import { Scanner, validEan } from './scanner.js';
 import { FIELDS, plausibility } from './parser.js';
-import { MICRO, MKEYS } from './nutrients.js';
+import { MICRO, MKEYS, SUPP_EXTRA } from './nutrients.js';
 import * as ING from './ingredients.js';
 import { nutriScore } from './nutriscore.js';
-import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip } from './dishes.js';
+import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip, familyOf, KINDS, kindOf, dishesOfKind, rankKinds } from './dishes.js';
 import { LIFE, GOALS, DEFAULT_PROFILE, DEFAULT_SPLIT, calc, goalText, trend, checkProfile, migrateProfile, macroGrams } from './goals.js';
 import { $, $$, ic, fmt, num, num0, inVal, esc, today, addDays, dayDiff, dayLabel, dateLong, colorFor, initials, norm, download, parseD, dstr } from './util.js';
 
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.6.0';
 const screen = $('#screen');
 const MEALS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snacks'];
 const SRC = { Gericht: ['Gericht, Richtwert', 'bls'], OFF: ['Open Food Facts', 'off'], BLS: ['Grundlebensmittel', 'bls'], Eigen: ['Eigenes', 'eigen'], Rezept: ['Rezept', 'rezept'], Foto: ['Foto-Erfassung', 'foto'], Schnell: ['Schnell-Eintrag', 'foto'] };
@@ -52,6 +52,7 @@ const S = {
     water: { on: true, goal: 2500, glass: 250 }, streak: 'kcal', period: '3M', sunday: true },
   vtab: 'woche', // Verlauf: "Diese Woche" oder "Rückblick"
   ringMode: null, // Tag oder Woche auf der Startseite (für diese Sitzung)
+  cmp: [], // Produktvergleich (bis zu 3 Produkte)
 };
 
 function defaultMeal() {
@@ -61,11 +62,19 @@ function defaultMeal() {
 
 const isOnline = () => navigator.onLine !== false;
 const getFood = (id) => S.foods.get(id) || S.tmp.get(id) || BASIS_MAP.get(id) || DISH_FOODS.get(id);
+const BASIS_ALC = { 'bls:bier': 5, 'bls:rotwein': 13 };
+BASIS.forEach((f) => { if (BASIS_ALC[f.id]) { f.alc = BASIS_ALC[f.id]; f.drink = true; } });
 const BASIS_MAP = new Map(BASIS.map((f) => [f.id, f]));
 // Gerichte aus der Essensfoto-Liste sind auch normal such- und eintragbar (als Richtwert)
-const dishFood = (d) => ({ id: 'dish:' + d.k, src: 'Gericht', name: d.name, n: { ...d.n }, portions: [{ l: 'klein', g: d.p[0] }, { l: 'mittel', g: d.p[1] }, { l: 'groß', g: d.p[2] }] });
+// Alkohol in % vol bei Getränken aus der Gerichte-Liste
+const ALC_DISH = { beer: 5, pils: 4.9, weizen: 5.4, radler: 2.5, wine: 13, weisswein: 12, rose: 12, sekt: 11, cider: 5, gluehwein: 10, cocktail: 12, aperol: 8, hugo: 7, mojito: 12, pinacolada: 10, gintonic: 10, longdrink: 10, schnaps: 35, likoer: 20 };
+const dishFood = (d) => ({ id: 'dish:' + d.k, src: 'Gericht', name: d.name, n: { ...d.n }, portions: [{ l: 'klein', g: d.p[0] }, { l: 'mittel', g: d.p[1] }, { l: 'groß', g: d.p[2] }],
+  ...(ALC_DISH[d.k] ? { alc: ALC_DISH[d.k] } : {}), ...(kindOf(d.k) === 'getraenk' ? { drink: true } : {}) });
 const DISH_FOODS = new Map(DISHES.map((d) => [`dish:${d.k}`, dishFood(d)]));
 const goalMacros = () => S.goal.macros || macroGrams(S.goal.kcal, S.goal.split);
+// Alkohol: % vol des Eintrags (beim Eintragen gemerkt, sonst vom Lebensmittel). 1 ml Alkohol ≈ 0,79 g, 1 g ≈ 7 kcal
+const alcPct = (e) => e.alc ?? getFood(e.foodId)?.alc ?? 0;
+const alcKcal = (g, pct) => (g * pct / 100) * 0.79 * 7;
 // Tagesziel aus dem Rechner übernehmen (wenn "automatisch" an ist)
 function applyAuto() {
   if (!S.goal.auto || !S.profile || S.profile.skipped || checkProfile(S.profile)) return;
@@ -114,7 +123,7 @@ const IE = { vitd: 0.025, vita: 0.3, vite: 0.67 }; // 1 IE in der Einheit des N�
 const suppTaken = (d) => S.supplog[d] || {};
 // Menge des Wirkstoffs in der Einheit, die die App für den Nährstoff nutzt
 function suppDose(s, count) {
-  const m = MICRO.find((x) => x.k === s.nutr);
+  const m = MICRO.find((x) => x.k === s.nutr) || SUPP_EXTRA.find((x) => x.k === s.nutr);
   if (!m) return 0;
   const amt = s.amt * count;
   if (s.unit === 'IE') return IE[m.k] ? amt * IE[m.k] : 0;
@@ -140,7 +149,7 @@ function dayTotals(d, list = S.days.get(d) || []) {
 /* Verlauf über längere Zeit: Tageswerte, Serien und Rückblick */
 const PERIODS = [['1W', '1 Woche', 7], ['1M', '1 Monat', 30], ['3M', '3 Monate', 91], ['6M', '6 Monate', 182], ['1J', '1 Jahr', 365], ['ALL', 'Gesamt', 0]];
 const perShort = (k) => (k === 'ALL' ? 'Alle' : k.replace(/(\d)/, '$1 '));
-const STREAKS = { kcal: 'im Rahmen', prot: 'Eiweißziel erreicht', water: 'Wasserziel erreicht', supps: 'alle Supplements' };
+const STREAKS = { kcal: 'im Rahmen', prot: 'Eiweißziel erreicht', water: 'Wasserziel erreicht', supps: 'alle Supplements', alcfree: 'alkoholfrei' };
 const daysBetween = (a, b) => Math.round((parseD(b) - parseD(a)) / 864e5);
 // Einträge ab `from` laden und nach Tag sortieren
 async function loadHist(from) {
@@ -151,7 +160,11 @@ async function loadHist(from) {
 }
 function histDay(H, d) {
   let x = H.cache.get(d);
-  if (!x) { const list = H.per.get(d) || []; x = { d, ...dayTotals(d, list), n: list.length, goal: goalFor(d), water: water(d) }; H.cache.set(d, x); }
+  if (!x) {
+    const list = H.per.get(d) || [], al = list.filter((e) => alcPct(e) > 0);
+    x = { d, ...dayTotals(d, list), n: list.length, goal: goalFor(d), water: water(d), drinks: al.length, alc: al.reduce((a, e) => a + alcKcal(e.g, alcPct(e)), 0) };
+    H.cache.set(d, x);
+  }
   return x;
 }
 // Zählt der Tag für die Serie? Kalorien "im Rahmen": 70 bis 105 % vom Tagesziel; mit Wochenbudget zählt die Woche bis zu dem Tag
@@ -160,6 +173,7 @@ function dayOk(H, kind, d) {
   if (kind === 'water') return x.water > 0 && x.water * 1000 >= S.prefs.water.goal - 1;
   if (kind === 'prot') return x.n > 0 && x.prot >= x.goal.prot;
   if (kind === 'supps') { const log = suppTaken(d); return S.supps.length > 0 && S.supps.every((s) => log[s.id]); }
+  if (kind === 'alcfree') return x.n > 0 && !x.drinks; // nur Tage mit Einträgen zählen
   if (!x.n || x.kcal < x.goal.kcal * 0.7) return false;
   if (S.goal.perDay && S.goal.keepWeek) {
     const wd = weekDays(d).filter((w) => w <= d && w >= H.from);
@@ -170,7 +184,7 @@ function dayOk(H, kind, d) {
 // Aktuelle Serie: bis gestern (heute zählt mit, sobald erreicht; Kalorien erst, wenn der Tag vorbei ist)
 function currentStreak(H, kind = S.prefs.streak) {
   if (!H || !STREAKS[kind]) return 0;
-  let c = kind !== 'kcal' && dayOk(H, kind, today()) ? 1 : 0, d = addDays(today(), -1);
+  let c = kind !== 'kcal' && kind !== 'alcfree' && dayOk(H, kind, today()) ? 1 : 0, d = addDays(today(), -1);
   while (d >= H.from && dayOk(H, kind, d)) { c++; d = addDays(d, -1); }
   return c;
 }
@@ -437,7 +451,8 @@ const topbar = (title, right = '', backIcon = 'back') => `<div class="top">${S.s
 /* ---------- Bildschirme ---------- */
 const V = {};
 
-/* Besondere Treffer in der Suche: Kalorien-Eintrag ohne Lebensmittel und Wasser */
+/* Besondere Treffer in der Suche: Kalorien-Eintrag ohne Lebensmittel, Wasser und Alkohol */
+const ALC_QUICK = [['dish:beer', 330, 'Bier 0,33 l'], ['dish:beer', 500, 'Bier 0,5 l'], ['dish:wine', 200, 'Wein 0,2 l'], ['dish:weisswein', 200, 'Weißwein 0,2 l'], ['dish:sekt', 100, 'Sekt 0,1 l']];
 function specialResults(q) {
   const l = q.toLowerCase().replace(',', '.');
   let out = '';
@@ -446,6 +461,9 @@ function specialResults(q) {
   else if (/^(kal|kcal|cal|dumm|schnell|kalorien)/.test(l) && l.length >= 3) out += `<div class="card special"><div class="cardh"><h3>Kalorien eintragen</h3><span class="k">ohne Lebensmittel</span></div>
     <div class="qrow"><input id="qk" inputmode="numeric" placeholder="z. B. 450" aria-label="Kalorien"><span class="u">kcal</span><button class="btn" data-act="quickIn">Zu ${MEALS[S.addMeal]}</button></div>
     <small>Praktisch im Restaurant oder wenn du nur die Kalorien kennst.</small></div>`;
+  if (/^(alk|bier|wein|sekt|prost|beer)/.test(l) && l.length >= 3) out += `<div class="card special"><div class="cardh"><h3>Alkohol</h3><span class="k">schnell eintragen</span></div>
+    <div class="chips">${ALC_QUICK.map(([id, g, lab]) => `<button class="chip" data-act="qAlc" data-id="${id}" data-g="${g}">+ ${lab}</button>`).join('')}</div>
+    <small>Zu ${MEALS[S.addMeal]}. Die Kalorien aus Alkohol siehst du im Rückblick.</small></div>`;
   const wm = l.match(/^(\d+(?:\.\d+)?)\s*(ml|l|liter)\b(?:\s*wasser)?$/);
   const wq = /^(wass|water|trink|getr)/.test(l) && l.length >= 3;
   if (S.prefs.water?.on !== false && (wm || wq)) {
@@ -729,7 +747,7 @@ V.naehrwerte = {
     // Supplements zählen mit (Kalorien, Eiweiß und Wirkstoff)
     const sup = suppTotals(c.date), supN = Object.keys(suppTaken(c.date)).length;
     T.kcal += sup.kcal; T.prot += sup.prot;
-    for (const [k, v] of Object.entries(sup.micro)) { T[k] += v; has[k] = Math.max(has[k], n) || 1; }
+    for (const [k, v] of Object.entries(sup.micro)) { if (!(k in T)) continue; T[k] += v; has[k] = Math.max(has[k], n) || 1; }
     // kind: goal = Ziel, min = mindestens, max = höchstens
     const row = (l, v, ref, u, kind, col, d = 0, sub = false, note = '') => {
       const p = ref > 0 ? v / ref : 0;
@@ -749,9 +767,10 @@ V.naehrwerte = {
       row('davon gesättigte Fettsäuren', T.sat, satMax, 'g', 'max', '--fat', 0, true),
       row('Salz', T.salt, 6, 'g', 'max', '--muted', 1),
     ].join('');
-    const known = MICRO.filter((m) => has[m.k] > 0), unknown = MICRO.filter((m) => !has[m.k]);
+    const known = MICRO.filter((m) => has[m.k] > 0), unknown = MICRO.filter((m) => !has[m.k] && !m.x);
     const micro = known.map((m) => row(m.l, T[m.k], m.ref, m.u, 'ref', '--accent', m.d || 0, false,
-      `${fmt((T[m.k] / m.ref) * 100)} % des Referenzwerts${has[m.k] < n ? ` · nur aus ${has[m.k]} von ${n} Einträgen` : ''}`)).join('');
+      `${fmt((T[m.k] / m.ref) * 100)} % des Referenzwerts${has[m.k] < n ? ` · nur aus ${has[m.k]} von ${n} Einträgen` : ''}`)).join('')
+      + SUPP_EXTRA.filter((m) => sup.micro[m.k] > 0).map((m) => `<div class="nw"><div class="t"><span>${m.l}</span><span class="num"><b>${fmt(sup.micro[m.k], m.d || 0)}</b> ${m.u}</span></div><div class="s">aus Supplements · kein offizieller Referenzwert</div></div>`).join('');
     const meals = MEALS.map((m, i) => {
       const es = list.filter((e) => e.meal === i);
       if (!es.length) return '';
@@ -934,7 +953,7 @@ V.add = {
       <div class="list">${plan.map((p) => `<button class="item" data-act="planPick" data-pid="${esc(p.pid)}">${thumb(p)}<span class="tx"><span class="n">${esc(p.name)}</span><span class="s num">${fmt(p.g)} g · ${fmt(nutOf(p.n, p.g).kcal)} kcal</span></span>${ic('fwd')}</button>`).join('')}</div>
       <button class="btn" data-act="planAll" data-meal="${S.addMeal}">${ic('check')} Alles eintragen · ${fmt(planKcal(plan))} kcal</button></div>` : '';
     const hide = plan.length && S.prefs.planOnly && !S.showSearch && !S.basket;
-    const title = S.pickFor === 'recipe' ? 'Zutat wählen' : S.pickFor === 'plan' ? `Für den Plan: ${MEALS[S.planTarget.meal]} (${WD[S.planTarget.wd]})` : 'Hinzufügen';
+    const title = S.pickFor === 'cmp' ? 'Produkt zum Vergleichen' : S.pickFor === 'recipe' ? 'Zutat wählen' : S.pickFor === 'plan' ? `Für den Plan: ${MEALS[S.planTarget.meal]} (${WD[S.planTarget.wd]})` : 'Hinzufügen';
     return `${topbar(title)}
     <div class="pad" style="padding-top:0">
       ${picking ? '' : `<div class="mealpick">zu <button class="chip on" data-act="mealmenu">${MEALS[S.addMeal]} ▾</button> · ${dayLabel(S.day)}</div>`}
@@ -1036,6 +1055,7 @@ function foodChosen(f, { replaceView } = {}) {
     return;
   }
   if (S.pickFor === 'plan') return (replaceView ? replace : go)('product', { id: f.id, plan: true });
+  if (S.pickFor === 'cmp') { S.pickFor = null; S.q = ''; cmpAdd(cmpFromFood(f)); return; }
   (replaceView ? replace : go)('product', { id: f.id });
 }
 
@@ -1113,46 +1133,96 @@ V.mealguess = {
       ${c.shots?.length > 1 ? `<div class="shots">${c.shots.map((sh, i) => `<img src="${sh.preview}" alt="Foto ${i + 1}">`).join('')}</div>` : c.preview ? `<div class="photothumb"><img src="${c.preview}" alt="Dein Foto"><span class="badge">Dein Foto</span></div>` : ''}
       ${(c.shots?.length || 0) < 3 ? `<div class="row3" style="display:flex;gap:8px"><button class="btn sec" data-act="mealMore" style="flex:1">${ic('cam')} Noch ein Foto aus anderem Winkel</button><button class="iconbtn" data-act="mealMore" data-g="1" aria-label="Weiteres Foto aus der Galerie">${ic('image')}</button></div>
       <p class="fine" style="margin:-4px 0 0;text-align:left">${c.shots?.length > 1 ? `${c.shots.length} Fotos zusammen ausgewertet. ` : ''}Mehr Winkel machen die Erkennung sicherer (bis zu 3 Fotos).</p>` : `<p class="fine" style="margin:0;text-align:left">3 Fotos zusammen ausgewertet.</p>`}
-      <div class="lbl">Das könnte es sein</div>
+      ${c.learned?.length ? `<div class="lbl">Kenne ich von dir</div>${c.learned.map(guessBtn).join('')}` : ''}
+      ${c.big ? `<div class="lbl">Das könnte es sein</div>
       ${list.length ? list.map(guessBtn).join('')
-        : `<div class="notice">${ic('warn')}<span><b>Kein Gericht erkannt.</b> Die Erkennung kennt vor allem bekannte Gerichte wie Pizza, Burger, Nudeln, Suppe, Obst und Gemüse. Such das Gericht einfach selbst.</span></div>`}
+        : c.learned?.length ? '' : `<div class="notice">${ic('warn')}<span><b>Kein Gericht erkannt.</b> Die Erkennung kennt vor allem bekannte Gerichte wie Pizza, Burger, Nudeln, Suppe, Obst und Gemüse. Such das Gericht einfach selbst.</span></div>`}` : kindPicker(c)}
       ${c.extras?.length ? `<div class="lbl">Auch auf dem Teller erkannt</div>${c.extras.map(guessBtn).join('')}` : ''}
       <div class="lbl">Noch etwas dabei?</div>
       <div class="chips sidechips">${SIDE_CHIPS.filter((k) => DISH_MAP.has(k) && !list.some((g) => g.d.k === k) && !c.extras?.some((g) => g.d.k === k)).map((k) => `<button class="chip ${c.sel?.includes(k) ? 'on' : ''}" data-act="mealPick" data-k="${k}" aria-pressed="${!!c.sel?.includes(k)}">${esc(DISH_MAP.get(k).name)}</button>`).join('')}</div>
       <p class="fine" style="margin:0;text-align:left">Tippe alles an, was auf dem Teller ist. Jedes Teil bekommt danach seine eigene Portion.</p>
       <button class="btn sec" data-act="mealSearch">${ic('search')} Nichts davon? Selbst suchen</button>
       ${MEAL_DISCLAIMER}
-      <p class="fine" style="text-align:left;margin:0">Die Erkennung läuft auf dem Handy (${c.big ? 'große KI' : 'kleine KI'}). Die Prozente vergleichen die Vorschläge untereinander.${c.big ? '' : ' Hausmannskost wie Rouladen oder Eintopf erkennt sie oft nicht genau.'}</p>
+      <p class="fine" style="text-align:left;margin:0">Die Erkennung läuft auf dem Handy (${c.big ? 'große KI' : 'kleine KI'}). ${c.big ? 'Die Prozente vergleichen die Vorschläge untereinander.' : 'Die kleine KI erkennt nur die Art des Essens, das Gericht wählst du.'} Mit jedem eingetragenen Foto lernt die App deine Teller kennen (gespeichert wird nur ein Fingerabdruck, nicht das Foto).</p>
     </div>
     <div class="foot"><button class="btn" data-act="mealNext" ${c.sel?.length ? '' : 'disabled'}>${mealNextLabel(c)}</button></div>`;
   },
 };
 const SIDE_CHIPS = ['pommes', 'beilagensalat', 'reis', 'brot_scheibe', 'ketchup', 'mayo', 'cola', 'wasser'];
 const mealNextLabel = (c) => (c.sel?.length > 1 ? `Weiter zur Portion (${c.sel.length} Teile)` : 'Weiter zur Portion');
-function guessBtn({ d, s }) {
+function kindList(c) {
+  const q = norm(c.kq || '');
+  const list = dishesOfKind(c.kind).filter((d) => !q || norm(d.name).includes(q)).sort((a, b) => (c.sel?.includes(b.k) ? 1 : 0) - (c.sel?.includes(a.k) ? 1 : 0) || a.name.localeCompare(b.name, 'de'));
+  return list.slice(0, 40).map((d) => `<button class="chip ${c.sel?.includes(d.k) ? 'on' : ''}" data-act="mealPick" data-k="${d.k}" aria-pressed="${!!c.sel?.includes(d.k)}">${esc(d.name)}</button>`).join('') + (list.length > 40 ? `<span class="fine" style="margin:0">… und ${list.length - 40} weitere. Tipp oben ein Wort ein.</span>` : list.length ? '' : '<span class="fine" style="margin:0">Nichts gefunden.</span>');
+}
+function kindPicker(c) {
+  const top = new Map((c.kinds || []).map((x) => [x.k, x.s]));
+  const order = [...KINDS].sort((a, b) => (top.get(b.k) || 0) - (top.get(a.k) || 0));
+  const kd = KINDS.find((x) => x.k === c.kind);
+  const chosen = (c.sel || []).filter((k) => !c.learned?.some((l) => l.d.k === k) && !SIDE_CHIPS.includes(k)).map((k) => DISH_MAP.get(k)?.name).filter(Boolean);
+  return `<div class="lbl">Was für ein Essen ist es?</div>
+      ${c.kinds?.length ? '' : `<p class="fine" style="margin:0;text-align:left">Die kleine KI ist sich unsicher. Wähl die Art einfach selbst.</p>`}
+      <div class="chips kindchips">${order.map((x) => `<button class="chip ${c.kind === x.k ? 'on' : ''}" data-act="mealKind" data-k="${x.k}" aria-pressed="${c.kind === x.k}">${esc(x.l)}${top.get(x.k) >= 0.1 ? ` <small>${fmt(top.get(x.k) * 100)} %</small>` : ''}</button>`).join('')}</div>
+      ${kd ? `<div class="card kindbox"><div class="field" style="margin:0"><label for="kindq">${esc(kd.l)}: welches Gericht?</label><input id="kindq" placeholder="z. B. ${esc(dishesOfKind(kd.k)[0]?.name || '')}" value="${esc(c.kq || '')}" autocomplete="off"></div>
+        <div class="chips sidechips" id="kindlist">${kindList(c)}</div></div>` : ''}
+      ${chosen.length ? `<p class="fine" style="margin:0;text-align:left">Ausgewählt: ${chosen.map(esc).join(', ')}</p>` : ''}`;
+}
+function guessBtn({ d, s, learned }) {
   const on = !!cur().sel?.includes(d.k);
-  return `<button class="guess ${on ? 'on' : ''}" data-act="mealPick" data-k="${d.k}" aria-pressed="${on}"><b>${on ? ic('check') : ''}${esc(d.name)}</b><span class="p">${fmt(Math.max(1, Math.min(99, s * 100)))} %</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, s * 100))}%;background:var(--accent)"></i></span></button>`;
+  return `<button class="guess ${on ? 'on' : ''}" data-act="mealPick" data-k="${d.k}" aria-pressed="${on}"><b>${on ? ic('check') : ''}${esc(d.name)}</b><span class="p">${fmt(Math.max(1, Math.min(99, s * 100)))} %${learned ? ' ähnlich' : ''}</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, s * 100))}%;background:var(--accent)"></i></span></button>`;
 }
 // Ist Gericht x schon im Hauptgericht enthalten (oder umgekehrt)? z. B. „Pommes frites“ in „Currywurst mit Pommes“
 const nameWords = (n) => n.toLowerCase().split(/[^a-zäöüß]+/).filter((w) => w.length >= 4 && !['gegart', 'gekocht'].includes(w));
-const overlaps = (a, b) => nameWords(a.name).some((w) => b.name.toLowerCase().includes(w)) || nameWords(b.name).some((w) => a.name.toLowerCase().includes(w));
-const SIDE_RE = /^(Pommes|Süßkartoffel-Pommes|Curly|Kartoffelecken|Zwiebelringe|Beilagensalat|Gemischter Salat|Krautsalat|Gurkensalat|Tomatensalat|Reis|Basmatireis|Baguette|Brot|Brötchen|Fladenbrot|Naan|Knoblauchbrot|Kräuterbaguette|Ketchup|Mayonnaise|Senf|Knoblauchsoße|BBQ-Soße|Kräuterquark|Tzatziki|Cola|Limonade|Wasser|Sprudelwasser|Bier|Pils|Weißbier|Rotwein|Weißwein|Saft|Apfelschorle|Eistee)/;
-// Treffer aus den Bildausschnitten -> zusätzliche Teile auf dem Teller. Ein Teil zählt nur, wenn es in seinem
-// Ausschnitt sicherer erkannt wird als das Hauptgericht (z. B. die Pommes-Hälfte neben dem Burger).
-function mealExtras(guess, crops) {
-  const main = guess[0]?.d, out = [], hits = new Map();
-  for (const crop of crops || []) {
-    const mainS = main ? crop.find((x) => x.d.k === main.k)?.s || 0 : 0;
-    const h = crop.find((x) => !main || (x.d.k !== main.k && !overlaps(x.d, main)));
-    const ok = h && (h.s > mainS || (SIDE_RE.test(h.d.name) && h.s >= 0.25)); // Beilagen und Getränke dürfen etwas unsicherer sein
-    if (ok && (!hits.has(h.d.k) || hits.get(h.d.k).s < h.s)) hits.set(h.d.k, h);
+const overlaps = (a, b) => familyOf(a.k) === familyOf(b.k) || nameWords(a.name).some((w) => b.name.toLowerCase().includes(w)) || nameWords(b.name).some((w) => a.name.toLowerCase().includes(w));
+/* Aus bestätigten Fotos lernen: Gespeichert wird nur ein Bild-Fingerabdruck (Zahlen), nie das Foto. */
+// Schwellen mit echten Fotos gemessen (Nov. 2026): gleicher Teller neu fotografiert vs. verschiedene Gerichte, 0 Fehltreffer.
+const LEARN_MAX = 300, LEARN_TH = { big: 0.85, small: 0.7 }, LEARN_SURE = { big: 0.9, small: 0.78 };
+let prints = null;
+async function loadPrints() { if (!prints) prints = await getSetting('mealprints', []); return prints; }
+const cosine = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
+async function learnedMatches(ai, vecs) {
+  if (!vecs?.length) return [];
+  const best = new Map();
+  for (const p of await loadPrints()) {
+    if (p.ai !== ai || p.v.length !== vecs[0].length) continue;
+    const sim = Math.max(...vecs.map((v) => cosine(v, p.v)));
+    if (sim < LEARN_TH[ai]) continue;
+    for (const k of p.keys) if (DISH_MAP.has(k) && (best.get(k) || 0) < sim) best.set(k, sim);
   }
-  for (const h of [...hits.values()].sort((a, b) => b.s - a.s)) {
-    if (h.s < 0.15 || out.length >= 3) continue;
-    if (main && (h.d.k === main.k || overlaps(h.d, main))) continue;
+  return [...best].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, sim]) => ({ d: DISH_MAP.get(k), s: sim, sure: sim >= LEARN_SURE[ai], learned: true }));
+}
+async function rememberMeal(learn, keys) {
+  if (!learn?.vecs?.length || !keys.length) return;
+  const list = await loadPrints();
+  for (const v of learn.vecs) list.push({ ai: learn.ai, v: v.map((x) => Math.round(x * 1000) / 1000), keys, t: Date.now() });
+  for (const ai of ['big', 'small']) { const mine = list.filter((p) => p.ai === ai); if (mine.length > LEARN_MAX) mine.slice(0, mine.length - LEARN_MAX).forEach((p) => list.splice(list.indexOf(p), 1)); }
+  S.printCount = list.length;
+  await setSetting('mealprints', list);
+}
+const SIDE_RE = /^(Pommes|Süßkartoffel-Pommes|Curly|Kartoffelecken|Zwiebelringe|Beilagensalat|Gemischter Salat|Krautsalat|Gurkensalat|Tomatensalat|Reis|Basmatireis|Baguette|Brot|Brötchen|Fladenbrot|Naan|Knoblauchbrot|Kräuterbaguette|Ketchup|Mayonnaise|Senf|Knoblauchsoße|BBQ-Soße|Kräuterquark|Tzatziki|Cola|Limonade|Wasser|Sprudelwasser|Bier|Pils|Weißbier|Rotwein|Weißwein|Saft|Apfelschorle|Eistee)/;
+// Treffer aus den Bildausschnitten -> zusätzliche Teile auf dem Teller (nur große KI).
+// Gemessen mit echten Fotos (Nov. 2026): Die alte Regel verglich Anteile unter den 5 besten Vorschlägen je Ausschnitt.
+// Die sind immer hoch, darum kamen bei fast jedem Foto falsche Teile dazu (z. B. Orangensaft, Kaffee).
+// Jetzt zählt die echte Wahrscheinlichkeit (raw): Ein Teil muss im Ausschnitt klar erkannt sein (ab 12 %, Beilagen ab 8 %)
+// und mindestens doppelt so sicher wie das Hauptgericht im selben Ausschnitt.
+function mealExtras(guess, crops) {
+  const main = guess[0]?.d, out = [], hits = new Map(), pre = [];
+  for (const crop of crops || []) {
+    const h = crop.find((x) => !main || (x.d.k !== main.k && !overlaps(x.d, main)));
+    if (!h || h.raw == null) continue;
+    const mainRaw = main ? crop.find((x) => x.d.k === main.k)?.raw || 0 : 0;
+    if (h.raw < (SIDE_RE.test(h.d.name) ? 0.08 : 0.12) || h.raw < 2 * mainRaw) continue;
+    if (!hits.has(h.d.k) || hits.get(h.d.k).raw < h.raw) hits.set(h.d.k, h);
+  }
+  for (const h of [...hits.values()].sort((a, b) => b.raw - a.raw)) {
+    // steht schon unter „Das könnte es sein“: dort lassen und nur vormerken, nicht doppelt zeigen
+    const inGuess = guess.find((g) => g.d.k === h.d.k || familyOf(g.d.k) === familyOf(h.d.k));
+    if (inGuess) { if (h.raw >= 0.2 && !pre.includes(inGuess.d.k)) pre.push(inGuess.d.k); continue; }
+    if (out.length >= 2) continue;
     if (out.some((o) => o.d.k === h.d.k || overlaps(o.d, h.d))) continue;
     out.push(h);
   }
+  out.pre = pre;
   return out;
 }
 const plateSvg = (r) => `<svg viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="26" fill="var(--surface2)" stroke="var(--line)" stroke-width="2"/><circle cx="28" cy="28" r="${r}" fill="#D9B45E"/><circle cx="28" cy="28" r="${r * 0.5}" fill="#B5482B"/></svg>`;
@@ -1216,10 +1286,10 @@ async function recognizeMeal(me) {
   const step = (msg, pct) => { me.msg = msg; me.pct = pct; const m = $('#mgMsg'), b = $('#mgBar'); if (m) m.textContent = msg; if (b) b.style.width = pct + '%'; };
   const cam = await import('./foodcam.js');
   const big = S.prefs.ai === 'big';
-  if (me.big !== big || !me.acc) { me.big = big; me.acc = null; me.done = 0; me.crops = []; }
+  if (me.big !== big || !me.acc) { me.big = big; me.acc = null; me.done = 0; me.crops = []; me.vecs = []; }
   me.busy = true; me.ask = false; me.err = null; render(true);
-  const prog = (f) => { if (cur() === me) step(`Bilderkennung wird geladen … ${Math.round(f * 100)} %`, 8 + f * 80); };
-  const add = (probs) => { me.acc = me.acc ? me.acc.map((x, i) => x + probs[i]) : Array.from(probs); me.done++; };
+  const prog = (f, msg) => { if (cur() === me) step(msg || `Bilderkennung wird geladen … ${Math.round(f * 100)} %`, 8 + f * 80); };
+  const add = (probs) => { me.acc = me.acc ? me.acc.map((x, i) => x + probs[i]) : Array.from(probs); if (probs.vec) me.vecs.push(probs.vec); me.done++; };
   try {
     step('Bilderkennung wird geladen …', 8);
     while (me.done < me.shots.length) {
@@ -1230,13 +1300,13 @@ async function recognizeMeal(me) {
           console.error(e);
           if (cur() !== me) return;
           toast('Die große KI ließ sich nicht laden. Ich nehme die kleine.', true);
-          me.big = false; me.acc = null; me.done = 0; me.crops = []; render(true);
+          me.big = false; me.acc = null; me.done = 0; me.crops = []; me.vecs = []; render(true);
           continue;
         }
       } else add(await cam.classify(sh.canvas, prog));
       if (cur() !== me) return;
       // Bildausschnitte: Beilagen und weitere Teile finden
-      for (const [ri, r] of (sh.regions || []).entries()) {
+      for (const [ri, r] of (me.big ? sh.regions || [] : []).entries()) { // kleine KI: Ausschnitte lieferten im Test fast nur Fehltreffer
         step(`Teller wird abgesucht … ${ri + 1} von ${sh.regions.length}`, 90 + ri);
         try {
           const probs = me.big ? await cam.classifyClip(r.big, CLIP_TEXTS) : await cam.classify(r.sq);
@@ -1248,11 +1318,18 @@ async function recognizeMeal(me) {
     }
     step('Gericht wird erkannt …', 95);
     const avg = me.acc.map((x) => x / me.done);
-    me.guess = me.big ? rankClip(avg, 3) : rankDishes(avg, 3);
+    // Kleine KI: kennt nur wenige Gerichte sicher, darum nur die Art (Suppe, Pizza …) und dann selbst wählen
+    me.guess = me.big ? rankClip(avg, 3) : [];
+    me.kinds = me.big ? [] : rankKinds(avg);
+    if (!me.big) { me.kind = me.kinds[0]?.k || null; me.kq = ''; }
     me.extras = mealExtras(me.guess, me.crops);
-    me.guess = me.guess.filter((g, i) => !i || !me.extras.some((x) => x.d.k === g.d.k)); // nicht doppelt anzeigen
+    me.learned = await learnedMatches(me.big ? 'big' : 'small', me.vecs);
+    // gelernte Treffer stehen oben und verdrängen sie aus den anderen Listen
+    me.guess = me.guess.filter((g) => !me.learned.some((l) => familyOf(l.d.k) === familyOf(g.d.k)));
+    me.extras = me.extras.filter((g) => !me.learned.some((l) => familyOf(l.d.k) === familyOf(g.d.k)));
     const keep = (me.sel || []).filter((k) => SIDE_CHIPS.includes(k)); // selbst angetippte Beilagen bleiben
-    me.sel = [...new Set([...(me.guess[0] ? [me.guess[0].d.k] : []), ...me.extras.filter((x) => x.s >= 0.3).map((x) => x.d.k), ...keep])];
+    const first = me.learned[0]?.sure ? me.learned.filter((l) => l.sure).map((l) => l.d.k) : me.guess[0] ? [me.guess[0].d.k] : [];
+    me.sel = [...new Set([...first, ...me.extras.filter((x) => x.raw >= 0.2).map((x) => x.d.k), ...(me.extras.pre || []), ...keep])];
     me.busy = false;
     render(true);
   } catch (e) { mealFail(me, e); }
@@ -1321,6 +1398,7 @@ V.product = {
         <div class="lbl">${quickE ? 'Kalorien' : 'Menge in Gramm'}</div>
         <div class="amount"><input id="amt" inputmode="decimal" value="${inVal(g)}" aria-label="${quickE ? 'Kalorien' : 'Menge in Gramm'}"><div class="unit" ${quickE ? 'hidden' : ''}><button class="chip ${portions.every((p) => p.g !== g) && g === 100 ? 'on' : ''}" data-act="unit" data-g="100">100 g</button>${portions.map((p) => `<button class="chip ${p.g === g ? 'on' : ''}" data-act="unit" data-g="${p.g}">${esc(p.l)} · ${fmt(p.g)} g</button>`).join('')}</div></div>
         <div class="calc"><div class="k"><b id="c-kcal">${fmt(n.kcal)}</b><span>kcal</span></div><div><b id="c-prot">${fmt(n.prot, 1)}</b><span>Eiweiß</span></div><div><b id="c-carb">${fmt(n.carb, 1)}</b><span>Kohlenh.</span></div><div><b id="c-fat">${fmt(n.fat, 1)}</b><span>Fett</span></div></div>
+        ${(e ? alcPct(e) : f.alc) ? `<div class="alcline">Davon aus Alkohol: <b id="c-alc" data-pct="${e ? alcPct(e) : f.alc}">${fmt(alcKcal(g, e ? alcPct(e) : f.alc))} kcal</b> <span>(${fmt(e ? alcPct(e) : f.alc, 1)} % vol)</span></div>` : ''}
         <div class="lbl" style="margin-top:4px">Mahlzeit</div>
         <div class="chips">${MEALS.map((m, i) => `<button class="chip ${i === meal ? 'on' : ''}" data-act="meal" data-m="${i}">${m}</button>`).join('')}</div>
         ${e ? '' : `<div style="font-size:13px;color:var(--muted)">am ${dayLabel(S.day) === 'Heute' ? 'heutigen Tag' : esc(dateLong(S.day))}</div>`}
@@ -1330,6 +1408,7 @@ V.product = {
       </tbody></table>
       <div style="font-size:12px;color:var(--muted)">Quelle: ${SRC[f.src]?.[0] || 'Eigenes'}${f.src === 'OFF' ? ' (ODbL, von Freiwilligen gepflegt). Werte bitte mit der Packung vergleichen.' : f.src === 'BLS' ? ' (gerundete Richtwerte).' : ''}</div></div>
       ${quickE ? '' : nutriCard(f)}
+      ${quickE || e || c.plan ? '' : `<button class="btn sec" data-act="cmpAdd">${ic('copy')} ${S.cmp.some((x) => x.id === f.id) ? 'Zum Vergleich' : S.cmp.length ? `Vergleichen (${S.cmp.length + 1}. Produkt)` : 'Mit anderem Produkt vergleichen'}</button>`}
       ${f.src === 'Rezept' && f.recipe?.steps?.length ? `<button class="btn sec" data-act="openCook" data-id="${esc(f.id)}">${ic('timer')} Zubereitung ansehen (${f.recipe.steps.length} ${f.recipe.steps.length === 1 ? 'Schritt' : 'Schritte'})</button>` : ''}
       ${e ? `<div class="row2"><button class="btn sec" data-act="copyEntry">${ic('copy')} Kopieren</button><button class="btn danger" data-act="del">${ic('trash')} Löschen</button></div>` : ''}
     </div>
@@ -1367,6 +1446,7 @@ V.food = {
         <div class="field"><label for="fn">Name</label><input id="fn" value="${esc(c.name ?? f?.name ?? '')}" placeholder="z. B. Bauernbrot vom Markt"></div>
         <div class="row2"><div class="field"><label for="fb">Marke (optional)</label><input id="fb" value="${esc(f?.brand || '')}" placeholder="optional"></div>
         <div class="field"><label for="fbc">Barcode (optional)</label><input id="fbc" inputmode="numeric" value="${esc(c.bc || f?.barcode || '')}" placeholder="optional"></div></div>
+        <div class="field"><label for="falc">Alkohol in % vol (nur bei Getränken mit Alkohol)</label><input id="falc" inputmode="decimal" value="${esc(c.alc ?? (f?.alc ? inVal(f.alc, 1) : ''))}" placeholder="z. B. 5 bei Bier"></div>
       </div>
       <div class="card">
         <div class="seg" role="tablist"><button data-act="per" data-v="g100" class="${per === 'g100' ? 'on' : ''}">pro 100 g</button><button data-act="per" data-v="portion" class="${per === 'portion' ? 'on' : ''}">pro Portion</button></div>
@@ -1655,7 +1735,7 @@ V.checkres = {
         ${tl.map((t) => `<div class="tlrow"><i class="lvdot" style="background:${COL[t.lvl]}"></i><span>${TL[t.k]}</span><b>${WORD[t.lvl]}</b><span class="num">${fmt(t.v, 1)} g</span></div>`).join('')}
         <div class="fine" style="margin:0;text-align:left">Grenzwerte: britische Food Standards Agency (FSA), ${d.drink ? 'für Getränke' : 'für Lebensmittel'}.</div></div>` : ''}
       ${extras.length ? `<div class="card"><div class="lbl">Weitere Infos</div>${extras.map(([k, v]) => `<div class="tlrow"><span>${k}</span><b style="margin-left:auto;text-align:right">${v}</b></div>`).join('')}</div>` : ''}
-      ${d.food ? `<button class="btn" data-act="checkDiary">${ic('plus')} Ins Tagebuch übernehmen</button>` : ''}
+      ${d.food ? `<button class="btn" data-act="checkDiary">${ic('plus')} Ins Tagebuch übernehmen</button><button class="btn sec" data-act="cmpAddCheck">${ic('copy')} ${S.cmp.length && !S.cmp.some((x) => x.id === d.food.id) ? `Vergleichen (${S.cmp.length + 1}. Produkt)` : 'Mit anderem Produkt vergleichen'}</button>` : ''}
       ${d.code ? `<a class="btn ghost" href="${d.kind === 'cos' ? 'https://world.openbeautyfacts.org' : 'https://world.openfoodfacts.org'}/product/${esc(d.code)}" target="_blank" rel="noopener">Daten bei ${esc(d.src)} korrigieren</a>` : `<button class="btn ghost" data-act="checkEdit">Zutatenliste bearbeiten</button>`}
     </div>`;
   },
@@ -1666,6 +1746,90 @@ V.checkres = {
     const counts = [0, 0, 0, 0];
     (c.res || []).forEach((r) => { if (r.it) counts[r.it.level]++; });
     rememberCheck({ id: d.code || c.hid, name: d.name, brand: d.brand, img: d.img, kind: d.kind, counts, data: d });
+  },
+};
+/* Produktvergleich: bis zu 3 Produkte nebeneinander, pro 100 g bzw. 100 ml */
+const CMP_MAX = 3;
+function cmpFromFood(f, check) {
+  return { id: f.id, name: f.name, brand: f.brand || '', img: f.img || '', n: { ...f.n }, nutri: check?.nutri || nutriOf(f)?.g || null,
+    drink: !!(check?.drink || f.drink || f.alc), alc: f.alc || 0, code: f.barcode || check?.code || null, bad: check ? cmpBad(check) : null,
+    food: { id: f.id, src: f.src, name: f.name, brand: f.brand || '', img: f.img || '', barcode: f.barcode, n: { ...f.n }, portions: f.portions || [], nutri: f.nutri, alc: f.alc, drink: f.drink } };
+}
+// Anzahl bedenklicher Inhaltsstoffe (Stufe „Einschränken“ und „Problematisch“), null = keine Zutatenliste
+function cmpBad(d) {
+  if (!d || (!d.text && !d.additives?.length)) return null;
+  return ING.analyze(d.text, 'food', d.additives).filter((r) => r.it && r.it.level >= 2).length;
+}
+const saveCmp = () => setSetting('compare', S.cmp).catch(() => {});
+function cmpAdd(x) {
+  const i = S.cmp.findIndex((y) => y.id === x.id);
+  if (i >= 0) S.cmp[i] = { ...S.cmp[i], ...x, bad: x.bad ?? S.cmp[i].bad };
+  else if (S.cmp.length >= CMP_MAX) { toast(`Höchstens ${CMP_MAX} Produkte. Entferne erst eins.`, true); }
+  else S.cmp.push(x);
+  saveCmp();
+  if (S.stack.some((s) => s.v === 'compare')) popTo('compare'); else go('compare');
+}
+V.compare = {
+  async load() {
+    // Inhaltsstoffe nachladen (einmal je Produkt, nur mit Barcode und Internet)
+    const todo = S.cmp.filter((x) => x.code && x.bad == null && !x.tried);
+    if (!todo.length || !isOnline()) return;
+    await Promise.all(todo.map(async (x) => {
+      x.tried = true;
+      try {
+        const d = checkCache.get(x.code) || (await OFF.lookupCheck(x.code));
+        if (d) { checkCache.set(x.code, d); x.bad = cmpBad(d); if (d.nutri && !x.nutri) x.nutri = d.nutri; if (d.drink) x.drink = true; }
+      } catch { /* ohne Internet bleibt es bei „–“ */ }
+    }));
+    saveCmp();
+  },
+  html() {
+    const L = S.cmp;
+    const head = topbar('Vergleich', L.length ? `<button class="linkbtn" data-act="cmpClear">Leeren</button>` : '');
+    const addBtns = L.length < CMP_MAX ? `<div class="row2"><button class="btn sec" data-act="cmpScan">${ic('scan')} Scannen</button><button class="btn sec" data-act="cmpSearch">${ic('search')} Suchen</button></div>` : '';
+    if (L.length < 2) return `${head}<div class="pad" style="padding-top:0">
+      ${L.length ? `<div class="card"><div class="hero" style="margin:0">${thumb(L[0])}<div style="min-width:0"><h3>${esc(L[0].name)}</h3><div class="s">${esc(L[0].brand)}</div></div></div></div>` : ''}
+      <div class="card"><b>${L.length ? 'Jetzt das zweite Produkt wählen' : 'Zwei Produkte vergleichen'}</b><p style="margin:0;color:var(--muted);font-size:14px">Scanne oder suche ${L.length ? 'ein weiteres Produkt' : 'zwei Produkte'}. Die App zeigt die Nährwerte nebeneinander und markiert den besseren Wert grün.</p></div>
+      ${addBtns}</div>`;
+    const allDrink = L.every((x) => x.drink), unit = allDrink ? '100 ml' : L.some((x) => x.drink) ? '100 g bzw. ml' : '100 g';
+    // Zeilen: Name, Wert je Produkt, Anzeige, besser = 'low' | 'high' | null, Mindestabstand für „besser“
+    const nv = (k) => L.map((x) => x.n?.[k] ?? null);
+    const rows = [
+      ['Kalorien', nv('kcal'), (v) => `${fmt(v)} kcal`, 'low', 5],
+      ['Eiweiß', nv('prot'), (v) => `${fmt(v, 1)} g`, 'high', 0.5],
+      ['Kohlenhydrate', nv('carb'), (v) => `${fmt(v, 1)} g`, null],
+      ['davon Zucker', nv('sugar'), (v) => `${fmt(v, 1)} g`, 'low', 0.5, 1],
+      ['Fett', nv('fat'), (v) => `${fmt(v, 1)} g`, 'low', 0.5],
+      ['davon gesättigt', nv('sat'), (v) => `${fmt(v, 1)} g`, 'low', 0.3, 1],
+      ['Ballaststoffe', nv('fiber'), (v) => `${fmt(v, 1)} g`, 'high', 0.5],
+      ['Salz', nv('salt'), (v) => `${fmt(v, 2)} g`, 'low', 0.05],
+    ];
+    if (L.some((x) => x.alc)) rows.push(['Alkohol', L.map((x) => x.alc || 0), (v) => `${fmt(v, 1)} % vol`, 'low', 0.3]);
+    const ns = L.map((x) => (x.nutri ? NS.indexOf(x.nutri) : null));
+    const tl = L.map((x) => ING.traffic(x.n || {}, x.drink));
+    const tlScore = tl.map((t) => (t.length ? t.reduce((a, y) => a + y.lvl, 0) : null));
+    const bad = L.map((x) => x.bad ?? null);
+    const bestOf = (vals, dir, min = 0) => {
+      const ok = vals.filter((v) => v != null);
+      if (!dir || ok.length < 2) return null;
+      const b = dir === 'low' ? Math.min(...ok) : Math.max(...ok), w = dir === 'low' ? Math.max(...ok) : Math.min(...ok);
+      return Math.abs(b - w) > min ? b : null;
+    };
+    const cell = (v, best, show) => `<td class="${best != null && v === best ? 'best' : ''}">${v == null ? '<span class="na">–</span>' : show(v)}</td>`;
+    const TLC = ['var(--lv0)', 'var(--lv1)', 'var(--lv3)'];
+    const body = rows.map(([l, vals, show, dir, min, sub]) => { const b = bestOf(vals, dir, min); return `<tr class="${sub ? 'sub' : ''}"><th>${l}</th>${vals.map((v) => cell(v, b, show)).join('')}</tr>`; }).join('')
+      + (() => { const b = bestOf(ns, 'low'); return `<tr><th>Nutri-Score</th>${ns.map((v, i) => cell(v, b, () => nsBadge(L[i].nutri))).join('')}</tr>`; })()
+      + (() => { const b = bestOf(tlScore, 'low'); return `<tr><th>Ampel<small>Fett, gesättigt, Zucker, Salz</small></th>${tlScore.map((v, i) => cell(v, b, () => `<span class="tldots">${tl[i].map((t) => `<i style="background:${TLC[t.lvl]}"></i>`).join('')}</span>`)).join('')}</tr>`; })()
+      + (() => { const b = bestOf(bad, 'low'); return `<tr><th>Bedenkliche Stoffe<small>laut Check</small></th>${bad.map((v) => cell(v, b, (x) => String(x))).join('')}</tr>`; })();
+    return `${head}<div class="pad" style="padding-top:0">
+      <div class="card cmpcard"><table class="cmp cols${L.length}">
+        <thead><tr><th class="per">pro ${unit}</th>${L.map((x) => `<th class="ph"><button class="x" data-act="cmpRm" data-id="${esc(x.id)}" aria-label="${esc(x.name)} entfernen">${ic('close')}</button>${thumb(x)}<b>${esc(x.name)}</b>${x.brand ? `<span>${esc(x.brand)}</span>` : ''}</th>`).join('')}</tr></thead>
+        <tbody>${body}</tbody>
+        <tfoot><tr><th></th>${L.map((x) => `<td><button class="btn sm" data-act="cmpDiary" data-id="${esc(x.id)}">Eintragen</button><button class="btn ghost sm star ${S.favs.has(x.id) ? 'on' : ''}" data-act="cmpFav" data-id="${esc(x.id)}" aria-pressed="${S.favs.has(x.id)}">${ic('star')} ${S.favs.has(x.id) ? 'Gemerkt' : 'Merken'}</button></td>`).join('')}</tr></tfoot>
+      </table></div>
+      <p class="fine" style="text-align:left;margin:0">Grün ist der bessere Wert: weniger Kalorien, Zucker, Fett und Salz, mehr Eiweiß und Ballaststoffe. Bei Kohlenhydraten kommt es auf dein Ziel an. Bedenkliche Inhaltsstoffe zählt der Inhaltsstoff-Check (Stufe „Einschränken“ und „Problematisch“), „–“ heißt: keine Zutatenliste.</p>
+      ${addBtns}
+    </div>`;
   },
 };
 function ingRow(r, i) {
@@ -1833,6 +1997,14 @@ function rueckHtml(c) {
   const tops = [...cnt].sort((a, b) => b[1] - a[1]).slice(0, 5);
   const top = logged.reduce((a, x) => (!a || x.kcal > a.kcal ? x : a), null);
   const dShort = (d) => parseD(d).toLocaleDateString('de-DE', { day: 'numeric', month: 'short', year: 'numeric' });
+  // Alkohol im Zeitraum (heute zählt mit)
+  const inP = days.map((d) => histDay(H, d)).filter((x) => x.n > 0);
+  const alcK = inP.reduce((a, x) => a + x.alc, 0), drinks = inP.reduce((a, x) => a + x.drinks, 0), allK = inP.reduce((a, x) => a + x.kcal, 0);
+  const free = logged.filter((x) => !x.drinks).length, lim = S.prefs.alcLimit || 0;
+  const wk = weekDays(today()).filter((d) => d <= today()).reduce((a, d) => a + histDay(H, d).drinks, 0);
+  const alcCard = alcK > 0 || lim ? `<div class="card alccard"><div class="cardh"><span class="lbl">Alkohol</span>${lim ? `<span class="k num ${wk > lim ? 'over' : ''}">diese Woche ${wk} von ${lim} ${lim === 1 ? 'Getränk' : 'Getränken'}</span>` : ''}</div>
+      <div class="calc" style="grid-template-columns:repeat(3,1fr)"><div><b class="num">${fmt(alcK)}</b><span>kcal aus Alkohol</span></div><div><b class="num">${allK ? fmt((alcK / allK) * 100, alcK / allK < 0.1 ? 1 : 0) : 0} %</b><span>aller Kalorien</span></div><div><b class="num">${drinks}</b><span>${drinks === 1 ? 'Getränk' : 'Getränke'}</span></div></div>
+      <div style="font-size:13px;color:var(--muted)">Ø ${fmt(alcK / Math.max(1, n / 7))} kcal pro Woche${logged.length ? ` · ${free} von ${logged.length} ${logged.length === 1 ? 'Tag' : 'Tagen'} alkoholfrei` : ''}. Gezählt werden nur die Kalorien aus dem Alkohol selbst, Zucker im Getränk kommt noch dazu.</div></div>` : '';
   return `${topbar('Verlauf')}
   <div class="pad" style="padding-top:0">
     ${vtabs()}
@@ -1849,6 +2021,7 @@ function rueckHtml(c) {
       <div class="legend"><span><i style="background:var(--accent)"></i>im Ziel</span><span><i style="background:var(--carb)"></i>drüber</span><span><i style="background:none;border-top:2px dashed var(--ink);border-radius:0;height:0;width:14px"></i>Ziel</span></div></div>
     <div class="card"><div class="lbl">Ø Makros pro Tag</div>
       <div class="calc" style="grid-template-columns:repeat(3,1fr)"><div><b style="color:var(--prot)">${fmt(avg(logged, (x) => x.prot))} g</b><span>Eiweiß</span></div><div><b style="color:var(--carb)">${fmt(avg(logged, (x) => x.carb))} g</b><span>Kohlenh.</span></div><div><b style="color:var(--fat)">${fmt(avg(logged, (x) => x.fat))} g</b><span>Fett</span></div></div></div>`}
+    ${alcCard}
     ${Wp.on && wat.length ? `<div class="stats"><div class="stat"><span class="lbl">Ø Wasser</span><b class="num">${fmt(avg(wat, (x) => x.water), 1)} <small>l / Tag</small></b><span>Ziel ${fmt(Wp.goal / 1000, 1)} l</span></div><div class="stat"><span class="lbl">Wasserziel</span><b class="num">${wok} <small>${wok === 1 ? 'Tag' : 'Tage'}</small></b><span>${fmt((wok / wat.length) * 100)} % der Tage mit Wasser</span></div></div>` : ''}
     ${tops.length ? `<div class="card"><div class="cardh"><span class="lbl">Am häufigsten gegessen</span></div><div class="toplist">${tops.map(([nm, k], i) => `<div class="row"><b>${i + 1}</b><span>${esc(nm)}</span><span>${k}×</span></div>`).join('')}</div></div>` : ''}
     ${top ? `<div class="card"><div class="lbl">Meiste Kalorien</div><div style="font-size:14px"><b class="num">${fmt(top.kcal)} kcal</b> am ${parseD(top.d).toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</div></div>` : ''}
@@ -1885,6 +2058,9 @@ V.reviewcfg = () => `${topbar('Rückblick und Serien')}
       <div class="typelist">${[...Object.entries(STREAKS).map(([k, l]) => [k, 'Tage ' + l]), ['off', 'Keine Serie zeigen']].map(([k, l]) => `<button data-act="streakKind" data-v="${k}" aria-pressed="${S.prefs.streak === k}" style="${S.prefs.streak === k ? 'border-color:var(--accent);background:var(--accent-soft)' : ''}">${l}${S.prefs.streak === k ? ic('check') : ''}</button>`).join('')}</div>
       <div style="font-size:12.5px;color:var(--muted)">Im Rahmen heißt 70 bis 105 % vom Tagesziel. Mit Wochenbudget („Wochensumme gleich lassen“) zählt die Woche, damit ein Freitag mit mehr Kalorien die Serie nicht bricht.</div></div>
     <div class="card"><label class="togglerow"><span>Wochenrückblick am Wochenende<small>Kleine Karte auf der Startseite am letzten Tag der Woche</small></span><input type="checkbox" class="tg" id="sun-on" ${S.prefs.sunday ? 'checked' : ''}></label></div>
+    <div class="card"><div class="lbl">Alkohol: Wochenlimit</div>
+      <div class="chips">${[0, 1, 2, 3, 5, 7, 10, 14].map((v) => `<button class="chip ${(S.prefs.alcLimit || 0) === v ? 'on' : ''}" data-act="alcLimit" data-v="${v}" aria-pressed="${(S.prefs.alcLimit || 0) === v}">${v ? `höchstens ${v}` : 'kein Limit'}</button>`).join('')}</div>
+      <div style="font-size:12.5px;color:var(--muted)">Getränke pro Woche. Der Rückblick zeigt, wie viele es diese Woche schon waren. Alkoholfreie Tage kannst du oben als Serie wählen.</div></div>
   </div>`;
 
 /* Einstellungen */
@@ -1935,7 +2111,8 @@ V.settings = {
       <div class="lbl">App</div>
       <div class="card"><div class="field"><label for="theme">Design</label><select id="theme">${[['system', 'Wie das Gerät'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([v, l]) => `<option value="${v}" ${S.theme === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
         <div class="field"><label for="wstart">Woche beginnt am</label><select id="wstart"><option value="1" ${S.prefs.weekStart === 1 ? 'selected' : ''}>Montag</option><option value="0" ${S.prefs.weekStart === 0 ? 'selected' : ''}>Sonntag</option><option value="6" ${S.prefs.weekStart === 6 ? 'selected' : ''}>Samstag</option></select></div>
-        <div class="field"><label for="aimode">Foto-Erkennung</label><select id="aimode"><option value="" ${!S.prefs.ai ? 'selected' : ''}>Beim ersten Foto fragen</option><option value="big" ${S.prefs.ai === 'big' ? 'selected' : ''}>Große KI (genauer, einmalig ca. 150 MB)</option><option value="small" ${S.prefs.ai === 'small' ? 'selected' : ''}>Kleine KI (ca. 15 MB)</option></select></div></div>
+        <div class="field"><label for="aimode">Foto-Erkennung</label><select id="aimode"><option value="" ${!S.prefs.ai ? 'selected' : ''}>Beim ersten Foto fragen</option><option value="big" ${S.prefs.ai === 'big' ? 'selected' : ''}>Große KI (genauer, einmalig ca. 150 MB)</option><option value="small" ${S.prefs.ai === 'small' ? 'selected' : ''}>Kleine KI (ca. 15 MB)</option></select></div>
+        ${S.printCount ? `<div class="togglerow" style="align-items:center"><span>Gelernte Fotos<small>${S.printCount} Fingerabdrücke deiner Teller, nur auf diesem Gerät</small></span><button class="btn ghost" data-act="forgetMeals" style="width:auto">Löschen</button></div>` : ''}</div>
       <div class="lbl">Deine Daten</div>
       <div class="setlist">
         <button class="setrow" data-act="exportJson">${ic('down')}<span class="tx">Sicherung speichern<small>Alles als Datei (JSON), z. B. für ein neues Handy</small></span></button>
@@ -2071,7 +2248,7 @@ V.supp = {
         <div class="field"><label for="s-name">Name</label><input id="s-name" value="${esc(s?.name || '')}" placeholder="z. B. Calcium"></div>
         <div class="row2"><div class="field"><label for="s-amt">Menge pro Einheit</label><input id="s-amt" inputmode="decimal" value="${s ? inVal(s.amt) : ''}" placeholder="z. B. 1000"></div><div class="field"><label for="s-unit">Einheit</label><select id="s-unit">${opt(SUPP_UNITS, s?.unit || 'mg')}</select></div></div>
         <div class="row2"><div class="field"><label for="s-form">Form</label><select id="s-form">${opt(SUPP_FORMS, s?.form || 'Tablette')}</select></div><div class="field"><label for="s-count">Anzahl pro Tag</label><input id="s-count" inputmode="numeric" value="${s?.count || 1}"></div></div>
-        <div class="field"><label for="s-nutr">Wirkstoff (zählt zum Tageswert)</label><select id="s-nutr"><option value="">anderer oder keiner</option>${MICRO.map((m) => `<option value="${m.k}" ${s?.nutr === m.k ? 'selected' : ''}>${m.l}</option>`).join('')}</select></div>
+        <div class="field"><label for="s-nutr">Wirkstoff (zählt zum Tageswert)</label><select id="s-nutr"><option value="">anderer oder keiner</option><optgroup label="Vitamine und Mineralstoffe">${MICRO.map((m) => `<option value="${m.k}" ${s?.nutr === m.k ? 'selected' : ''}>${m.l}</option>`).join('')}</optgroup><optgroup label="Weitere (ohne Referenzwert)">${SUPP_EXTRA.map((m) => `<option value="${m.k}" ${s?.nutr === m.k ? 'selected' : ''}>${m.l}</option>`).join('')}</optgroup></select></div>
       </div>
       <div class="card"><div class="lbl">Optional, z. B. bei Eiweißpulver</div>
         <div class="row2"><div class="field"><label for="s-kcal">kcal pro Einheit</label><input id="s-kcal" inputmode="decimal" value="${s?.kcal ? inVal(s.kcal) : ''}" placeholder="0"></div><div class="field"><label for="s-prot">Eiweiß g pro Einheit</label><input id="s-prot" inputmode="decimal" value="${s?.prot ? inVal(s.prot) : ''}" placeholder="0"></div></div>
@@ -2249,6 +2426,41 @@ document.addEventListener('click', async (ev) => {
     case 'period': S.period = a.dataset.v; renderKeep(); break;
     case 'defPeriod': S.prefs.period = a.dataset.v; S.period = a.dataset.v; await setSetting('prefs', S.prefs); renderKeep(); break;
     case 'streakKind': S.prefs.streak = a.dataset.v; await setSetting('prefs', S.prefs); renderKeep(); break;
+    case 'alcLimit': S.prefs.alcLimit = +a.dataset.v; await setSetting('prefs', S.prefs); renderKeep(); break;
+    case 'qAlc': {
+      const f = getFood(a.dataset.id), g = +a.dataset.g;
+      if (!f) break;
+      const e = { id: uid(), date: S.day, meal: S.addMeal, t: Date.now(), foodId: f.id, name: f.name, brand: '', src: f.src, img: '', g, n: { ...f.n }, portions: f.portions || [], alc: f.alc };
+      await db.put('entries', e);
+      (await loadDay(S.day)).push(e);
+      S.q = ''; root('heute'); toast(`${a.textContent.replace('+', '').trim()} zu ${MEALS[e.meal]} hinzugefügt (${fmt(nutOf(f.n, g).kcal)} kcal)`);
+      break;
+    }
+
+    /* Produktvergleich */
+    case 'cmpAdd': { const f = getFood(c.id); if (f) cmpAdd(cmpFromFood(f)); break; }
+    case 'cmpAddCheck': { const d = c.data; if (d?.food) cmpAdd(cmpFromFood(d.food, d)); break; }
+    case 'cmpRm': S.cmp = S.cmp.filter((x) => x.id !== a.dataset.id); saveCmp(); renderKeep(); break;
+    case 'cmpClear': S.cmp = []; saveCmp(); renderKeep(); break;
+    case 'cmpSearch': S.pickFor = 'cmp'; S.q = ''; S.showSearch = true; go('add'); break;
+    case 'cmpScan': S.pickFor = 'cmp'; go('scanner'); break;
+    case 'cmpDiary': {
+      const x = S.cmp.find((y) => y.id === a.dataset.id);
+      if (!x) break;
+      const f = getFood(x.id) || (x.food.barcode && (await findByBarcode(x.food.barcode))) || x.food;
+      if (!getFood(f.id)) S.tmp.set(f.id, f);
+      S.pickFor = null; S.basket = null; go('product', { id: f.id });
+      break;
+    }
+    case 'cmpFav': {
+      const x = S.cmp.find((y) => y.id === a.dataset.id);
+      if (!x) break;
+      const id = x.id;
+      if (S.favs.has(id)) S.favs.delete(id); else { S.favs.add(id); if (!S.foods.has(id) && x.food.src === 'OFF') await saveFood(x.food); }
+      await setSetting('favs', [...S.favs]); renderKeep();
+      toast(S.favs.has(id) ? 'Gemerkt (in Favoriten)' : 'Aus Favoriten entfernt');
+      break;
+    }
 
     /* Supplements */
     case 'suppOpen': S.suppOpen = !S.suppOpen; renderKeep(); break;
@@ -2551,6 +2763,8 @@ document.addEventListener('click', async (ev) => {
     case 'mealPhoto': if (c.v === 'mealguess') replace('mealcam'); else go('mealcam'); break;
     case 'mealShoot': $('#mealInput').value = ''; $('#mealInput').click(); break;
     case 'mealGallery': $('#mealGallery').value = ''; $('#mealGallery').click(); break;
+    case 'mealKind': c.kind = a.dataset.k; c.kq = ''; renderKeep(); break;
+    case 'forgetMeals': prints = []; S.printCount = 0; await setSetting('mealprints', []); toast('Gelernte Fotos gelöscht'); renderKeep(); break;
     case 'mealPick': {
       const k = a.dataset.k; c.sel = c.sel || [];
       c.sel = c.sel.includes(k) ? c.sel.filter((x) => x !== k) : [...c.sel, k];
@@ -2559,7 +2773,7 @@ document.addEventListener('click', async (ev) => {
     case 'aiPick': S.prefs.ai = a.dataset.v; await setSetting('prefs', S.prefs); if (c.shots?.length) recognizeMeal(c); break;
     case 'mealMore': S.mealAdd = true; { const inp = $(a.dataset.g ? '#mealGallery' : '#mealInput'); inp.value = ''; inp.click(); } break;
     case 'checkUpdate': checkUpdate(); break;
-    case 'mealNext': if (c.sel?.length) go('mealportion', { k: c.sel[0], queue: c.sel.slice(1), total: c.sel.length, idx: 1, saved: [] }); break;
+    case 'mealNext': if (c.sel?.length) go('mealportion', { k: c.sel[0], queue: c.sel.slice(1), total: c.sel.length, idx: 1, saved: [], savedK: [], learn: c.vecs?.length ? { ai: c.big ? 'big' : 'small', vecs: c.vecs } : null }); break;
     case 'mealSize': c.g = +a.dataset.g; $('#mp-g').value = c.g; updateMealPortion(); break;
     case 'mealSearch': S.q = ''; S.showSearch = true; backToAdd(); setTimeout(() => $('#q')?.focus(), 80); break;
     case 'mealSave': {
@@ -2570,8 +2784,9 @@ document.addEventListener('click', async (ev) => {
         const e = { id: uid(), date: S.day, meal: S.addMeal, t: Date.now(), foodId: f.id, name: f.name, brand: '', src: 'Gericht', img: '', g, n: { ...f.n }, portions: f.portions, est: true };
         await db.put('entries', e); (await loadDay(S.day)).push(e);
       }
-      const saved = [...(c.saved || []), d.name];
-      if (c.queue?.length) { replace('mealportion', { k: c.queue[0], queue: c.queue.slice(1), total: c.total, idx: c.idx + 1, saved, safe: c.safe }); break; }
+      const saved = [...(c.saved || []), d.name], savedK = [...(c.savedK || []), d.k];
+      if (c.queue?.length) { replace('mealportion', { k: c.queue[0], queue: c.queue.slice(1), total: c.total, idx: c.idx + 1, saved, savedK, safe: c.safe, learn: c.learn }); break; }
+      await rememberMeal(c.learn, savedK);
       S.q = ''; root('heute');
       toast(saved.length > 1 ? `${saved.length} Teile als Schätzung zu ${MEALS[S.addMeal]} eingetragen` : `${d.name} als Schätzung zu ${MEALS[S.addMeal]} eingetragen`);
       break;
@@ -2629,7 +2844,7 @@ document.addEventListener('click', async (ev) => {
         if (f.src === 'OFF' && !S.foods.has(f.id)) f = await saveFood(f);
         const meal = c.meal ?? S.addMeal;
         if (S.basket) { S.addMeal = meal; S.basket.items.push(basketItem(f, g)); S.q = ''; backToAdd(); toast(`${f.name} zur Mahlzeit hinzugefügt`); break; }
-        const e = { id: uid(), date: S.day, meal, t: Date.now(), foodId: f.id, name: f.name, brand: f.brand || '', src: f.src, img: f.img || '', g, n: { ...f.n }, portions: f.portions || [] };
+        const e = { id: uid(), date: S.day, meal, t: Date.now(), foodId: f.id, name: f.name, brand: f.brand || '', src: f.src, img: f.img || '', g, n: { ...f.n }, portions: f.portions || [], ...(f.alc ? { alc: f.alc } : {}) };
         await db.put('entries', e);
         (await loadDay(S.day)).push(e);
         S.addMeal = meal;
@@ -2692,7 +2907,9 @@ document.addEventListener('click', async (ev) => {
       }
       if (!n.kj) n.kj = Math.round(n.kcal * 4.184);
       const old = c.id ? S.foods.get(c.id) : null;
-      const f = { ...(old || {}), id: old?.id || 'eigen:' + uid(), src: old?.src || 'Eigen', name, brand: $('#fb').value.trim(), barcode: $('#fbc').value.replace(/\D/g, '') || undefined, n, portions };
+      const alc = num($('#falc')?.value);
+      if (alc > 100) { $('#falc').focus(); return toast('Alkohol bitte in % vol (0 bis 100).', true); }
+      const f = { ...(old || {}), id: old?.id || 'eigen:' + uid(), src: old?.src || 'Eigen', name, brand: $('#fb').value.trim(), barcode: $('#fbc').value.replace(/\D/g, '') || undefined, n, portions, alc: alc > 0 ? alc : undefined };
       await saveFood(f);
       toast(name + ' gespeichert');
       if (old) back(); else foodChosen(f, { replaceView: true });
@@ -2846,11 +3063,14 @@ document.addEventListener('submit', (ev) => {
 
 screen.addEventListener('input', (ev) => {
   const t = ev.target, c = cur();
+  if (t.id === 'falc') { c.alc = t.value; return; }
+  if (t.id === 'kindq') { c.kq = t.value; const l = $('#kindlist'); if (l) l.innerHTML = kindList(c); return; }
   if (t.id === 'q') { S.q = t.value; $('#tabs').hidden = !!S.q.trim(); refreshResults(); scheduleOnline(); return; }
   if (t.id === 'amt') {
     const g = readAmt(); c.g = g; const e = c.entry ? S.days.get(c.date).find((x) => x.id === c.entry) : null;
     const f = e || getFood(c.id); const n = nutOf(f.n, g);
     $('#c-kcal').textContent = fmt(n.kcal); $('#c-prot').textContent = fmt(n.prot, 1); $('#c-carb').textContent = fmt(n.carb, 1); $('#c-fat').textContent = fmt(n.fat, 1); $('#t-g').textContent = fmt(g);
+    const ca = $('#c-alc'); if (ca) ca.textContent = fmt(alcKcal(g, +ca.dataset.pct)) + ' kcal';
     $$('[data-per]').forEach((td) => (td.textContent = fmt((+td.dataset.per * g) / 100, +td.dataset.d) + ' ' + td.dataset.u));
     $$('.amount .chip').forEach((b) => b.classList.toggle('on', +b.dataset.g === g));
     return;
@@ -2964,6 +3184,8 @@ async function init() {
   S.goals = goals || []; S.measures = measures || {}; S.supps = supps || []; S.supplog = supplog || {}; S.plan = plan || {};
   if (prefs) S.prefs = { ...S.prefs, ...prefs, water: { ...S.prefs.water, ...(prefs.water || {}) }, health: { ...S.prefs.health, ...(prefs.health || {}), send: { ...S.prefs.health.send, ...(prefs.health?.send || {}) } } };
   foods.forEach((f) => S.foods.set(f.id, f));
+  loadPrints().then((l) => { S.printCount = l.length; }).catch(() => {});
+  getSetting('compare', []).then((l) => { S.cmp = Array.isArray(l) ? l : []; }).catch(() => {});
   S.profile = migrateProfile(profile);
   if (goal) S.goal = { ...S.goal, ...goal, split: { ...DEFAULT_SPLIT, ...(goal.split || {}) } };
   applyAuto();
@@ -2995,4 +3217,4 @@ async function init() {
 init().catch((e) => { console.error(e); screen.innerHTML = `<div class="center"><h2>Die App konnte nicht starten</h2><p>${esc(e.message)}</p><p class="fine">Im privaten Modus mancher Browser ist die lokale Datenbank gesperrt.</p></div>`; });
 
 // für Tests
-window.__app = { S, db };
+window.__app = { S, db, go };

@@ -2,16 +2,27 @@ import { microFromOff } from './nutrients.js';
 
 // Open Food Facts: freie Produktdatenbank (ODbL). Direkte Abfrage, kein eigener Server.
 const BASE = 'https://world.openfoodfacts.org';
-const FIELDS = 'code,product_name,product_name_de,generic_name_de,brands,nutriments,serving_size,serving_quantity,image_front_small_url,quantity,nutriscore_grade';
+const FIELDS = 'code,product_name,product_name_de,generic_name_de,brands,nutriments,serving_size,serving_quantity,image_front_small_url,quantity,nutriscore_grade,categories_tags';
 
 function num(v) {
   const n = typeof v === 'string' ? parseFloat(v.replace(',', '.')) : v;
   return typeof n === 'number' && isFinite(n) ? n : 0;
 }
 
+// Alkohol in % vol: Angabe bei Open Food Facts, sonst grob aus der Kategorie (Bier 5 %, Wein 12 % …)
+function alcOf(nm, cats) {
+  const v = num(nm.alcohol_100g ?? nm.alcohol_value ?? nm.alcohol);
+  if (v > 0.5) return Math.round(v * 10) / 10;
+  const c = cats.join(' ');
+  if (!/en:alcoholic-beverages|en:beers|en:wines|en:spirits|en:liqueurs|en:ciders/.test(c) || /non-alcoholic|alcohol-free|alkoholfrei/.test(c)) return 0;
+  return /sparkling-wine|champagne|prosecco/.test(c) ? 11 : /en:wines/.test(c) ? 12 : /en:liqueurs/.test(c) ? 20 : /en:spirits/.test(c) ? 38 : 5;
+}
+
 export function mapProduct(p) {
   if (!p) return null;
-  const nm = p.nutriments || {};
+  const nm = p.nutriments || {}, cats = p.categories_tags || [];
+  const alc = alcOf(nm, cats);
+  const drink = cats.some((c) => /^en:(beverages|drinks|waters|sodas|juices)/.test(c)) || /\d\s*(ml|cl|l)\b/i.test(p.quantity || '');
   let kcal = nm['energy-kcal_100g'];
   if (kcal == null && nm['energy_100g'] != null) kcal = num(nm['energy_100g']) / 4.184; // energy_100g ist kJ
   const name = (p.product_name_de || p.product_name || p.generic_name_de || '').trim();
@@ -40,6 +51,8 @@ export function mapProduct(p) {
     },
     portions,
     ...(/^[a-e]$/.test(p.nutriscore_grade || '') ? { nutri: p.nutriscore_grade } : {}),
+    ...(alc ? { alc } : {}),
+    ...(drink || alc ? { drink: true } : {}),
   };
 }
 
