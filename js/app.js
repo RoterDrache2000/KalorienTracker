@@ -11,7 +11,7 @@ import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip, familyOf, KINDS, ki
 import { LIFE, GOALS, DEFAULT_PROFILE, DEFAULT_SPLIT, calc, goalText, trend, checkProfile, migrateProfile, macroGrams } from './goals.js';
 import { $, $$, ic, fmt, num, num0, inVal, esc, today, addDays, dayDiff, dayLabel, dateLong, colorFor, initials, norm, download, parseD, dstr } from './util.js';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.6.2';
 const screen = $('#screen');
 const MEALS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snacks'];
 const SRC = { Gericht: ['Gericht, Richtwert', 'bls'], OFF: ['Open Food Facts', 'off'], BLS: ['Grundlebensmittel', 'bls'], Eigen: ['Eigenes', 'eigen'], Rezept: ['Rezept', 'rezept'], Foto: ['Foto-Erfassung', 'foto'], Schnell: ['Schnell-Eintrag', 'foto'] };
@@ -912,13 +912,37 @@ async function storeCombo(b, name) {
   b.comboId = m.id; b.name = name;
   await setSetting('combos', S.combos);
 }
-function basketTotals() { return totals(S.basket.items); }
+// Nur einen Teil gegessen: Anteile für Gerichte und Mahlzeiten
+const FRACS = [[1, 'Alles'], [1 / 2, '½'], [1 / 3, '⅓'], [2 / 3, '⅔'], [1 / 4, '¼'], [3 / 4, '¾'], [1 / 5, '⅕'], [1 / 8, '⅛']];
+// Anteil als Bruch: 0,8 -> „4/5“; ohne passenden kleinen Bruch in Prozent
+function fracLabel(f) {
+  const hit = FRACS.find(([v]) => Math.abs(v - f) < 1e-6);
+  if (hit) return hit[1];
+  for (let d = 2; d <= 12; d++) { const n = Math.round(f * d); if (n > 0 && Math.abs(f * d - n) < 0.01) return `${n}/${d}`; }
+  return `${fmt(f * 100)} %`;
+}
+// Freie Eingabe: „2/3“, „4 / 5“, „0,75“, „75 %“, „75%“
+function parseFrac(t) {
+  t = String(t || '').trim().replace(',', '.');
+  let m = t.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/), v = NaN;
+  if (m) v = +m[1] / +m[2];
+  else if ((m = t.match(/^(\d+(?:\.\d+)?)\s*%$/))) v = +m[1] / 100;
+  else if (/^\d*\.?\d+$/.test(t)) v = +t;
+  return v > 0 && v <= 1 ? v : null;
+}
+const basketFrac = () => S.basket?.frac || 1;
+// Summe der Mahlzeit, mit dem gegessenen Anteil
+function basketTotals() { const t = totals(S.basket.items), f = basketFrac(); for (const k in t) t[k] *= f; return t; }
 function basketCard() {
   const b = S.basket, t = basketTotals();
   return `<div class="card basket" id="basket">
     <div class="sec-h"><span class="lbl">${b.name ? esc(b.name) : 'Deine Mahlzeit'}</span><button class="linkbtn" data-act="basketDrop">Verwerfen</button></div>
     <div>${b.items.map((i, ix) => `<div class="ing">${thumb(i)}<div style="min-width:0"><div class="n">${esc(i.name)}</div><div class="s num" id="bk${ix}">${fmt(nutOf(i.n, i.g).kcal)} kcal</div></div><span class="in" style="display:flex;align-items:center;gap:4px"><input data-bg="${ix}" inputmode="decimal" value="${inVal(i.g)}" aria-label="Menge ${esc(i.name)} in Gramm"><span class="u" style="font-size:12px;color:var(--muted)">g</span></span><button class="x" data-act="basketRm" data-ix="${ix}" aria-label="Entfernen">${ic('close')}</button></div>`).join('')}</div>
     <div class="calc"><div class="k"><b id="bt-kcal">${fmt(t.kcal)}</b><span>kcal</span></div><div><b id="bt-prot">${fmt(t.prot, 1)}</b><span>Eiweiß</span></div><div><b id="bt-carb">${fmt(t.carb, 1)}</b><span>Kohlenh.</span></div><div><b id="bt-fat">${fmt(t.fat, 1)}</b><span>Fett</span></div></div>
+    <div class="fracbox"><div class="lbl">Davon gegessen</div>
+      <div class="chips">${FRACS.map(([v, l]) => `<button class="chip ${Math.abs(basketFrac() - v) < 1e-6 ? 'on' : ''}" data-act="basketFrac" data-f="${v}">${l}</button>`).join('')}</div>
+      <div class="qrow"><label for="bfracin" style="font-size:13.5px;flex:1">Anderer Anteil</label><input id="bfracin" placeholder="z. B. 2/3" value="${FRACS.some(([v]) => Math.abs(v - basketFrac()) < 1e-6) ? '' : fracLabel(basketFrac())}" autocomplete="off" style="max-width:110px"></div>
+      ${basketFrac() < 1 ? `<div class="s">Die Mengen oben sind die ganze Mahlzeit. Eingetragen wird ${fracLabel(basketFrac())} davon, also ${fmt(basketTotals().kcal)} kcal.</div>` : ''}</div>
     <div style="font-size:13px;color:var(--muted)">Noch etwas dazu? Einfach unten suchen oder scannen.</div>
     <div class="field"><label for="b-name">Name (optional)</label><input id="b-name" value="${esc(b.name || '')}" placeholder="z. B. Pommes mit Mayo und Ketchup"></div>
     <div style="font-size:12.5px;color:var(--muted);margin-top:-4px">Mit Name wird die Mahlzeit gespeichert und steht unter „Mahlzeiten“ zum schnellen Eintragen bereit. Ohne Name wird sie nur eingetragen.</div>
@@ -1397,6 +1421,11 @@ V.product = {
       <div class="card">
         <div class="lbl">${quickE ? 'Kalorien' : 'Menge in Gramm'}</div>
         <div class="amount"><input id="amt" inputmode="decimal" value="${inVal(g)}" aria-label="${quickE ? 'Kalorien' : 'Menge in Gramm'}"><div class="unit" ${quickE ? 'hidden' : ''}><button class="chip ${portions.every((p) => p.g !== g) && g === 100 ? 'on' : ''}" data-act="unit" data-g="100">100 g</button>${portions.map((p) => `<button class="chip ${p.g === g ? 'on' : ''}" data-act="unit" data-g="${p.g}">${esc(p.l)} · ${fmt(p.g)} g</button>`).join('')}</div></div>
+        ${quickE ? '' : `<details class="fracbox" ${c.whole ? 'open' : ''}><summary>Nur einen Teil gegessen?</summary>
+          <div class="qrow"><label for="whole" style="font-size:13.5px;flex:1">Das Ganze wiegt</label><input id="whole" inputmode="decimal" value="${c.whole ? inVal(c.whole) : ''}" placeholder="z. B. 1000" style="max-width:110px"><span class="u">g</span></div>
+          <div class="chips">${FRACS.slice(1).map(([v, l]) => `<button class="chip ${c.whole && Math.abs(g - c.whole * v) < 0.6 ? 'on' : ''}" data-act="fracPick" data-f="${v}">${l}</button>`).join('')}</div>
+          <div class="qrow"><label for="fracin" style="font-size:13.5px;flex:1">Anderer Anteil</label><input id="fracin" placeholder="z. B. 4/5" autocomplete="off" style="max-width:110px"></div>
+          <div class="s" id="fracinfo">${fracInfo(c.whole, g)}</div></details>`}
         <div class="calc"><div class="k"><b id="c-kcal">${fmt(n.kcal)}</b><span>kcal</span></div><div><b id="c-prot">${fmt(n.prot, 1)}</b><span>Eiweiß</span></div><div><b id="c-carb">${fmt(n.carb, 1)}</b><span>Kohlenh.</span></div><div><b id="c-fat">${fmt(n.fat, 1)}</b><span>Fett</span></div></div>
         ${(e ? alcPct(e) : f.alc) ? `<div class="alcline">Davon aus Alkohol: <b id="c-alc" data-pct="${e ? alcPct(e) : f.alc}">${fmt(alcKcal(g, e ? alcPct(e) : f.alc))} kcal</b> <span>(${fmt(e ? alcPct(e) : f.alc, 1)} % vol)</span></div>` : ''}
         <div class="lbl" style="margin-top:4px">Mahlzeit</div>
@@ -1425,6 +1454,12 @@ function nutriCard(f) {
   return `<div class="card"><div class="sec-h"><span class="lbl">Nutri-Score</span>${r.g ? `<span style="font-size:13px;font-weight:700">${r.g.toUpperCase()}</span>` : ''}</div>
     <div class="ns ${r.g ? '' : 'grey'}" role="img" aria-label="${r.g ? 'Nutri-Score ' + r.g.toUpperCase() : 'Nutri-Score unbekannt'}">${NS.map((x) => `<span class="${x} ${x === r.g ? 'on' : ''}">${x.toUpperCase()}</span>`).join('')}</div>
     <div style="font-size:12.5px;color:var(--muted)">${!r.g ? 'Nicht genug Daten für den Nutri-Score.' : r.calc ? 'Aus den Nährwerten berechnet (ohne Obst- und Gemüseanteil), daher nur ein Richtwert.' : 'Laut Open Food Facts. A ist am günstigsten, E am ungünstigsten.'}</div></div>`;
+}
+// „500 g von 1000 g = ½“
+function fracInfo(whole, g) {
+  if (!(whole > 0)) return 'Gewicht vom ganzen Gericht oder der ganzen Packung eintragen, dann einen Anteil wählen. Oder oben direkt eintragen, wie viel du gegessen hast.';
+  const f = g / whole;
+  return `Gegessen: ${fmt(g)} g von ${fmt(whole)} g${f > 0 ? ` = ${fracLabel(f)}` : ''}`;
 }
 function readAmt() { const i = $('#amt'); const v = num(i ? i.value : cur().g); return isNaN(v) ? 0 : v; }
 
@@ -2101,6 +2136,7 @@ V.settings = {
       <div class="lbl">Planen</div>
       <div class="setlist">
         <button class="setrow" data-act="go" data-v="plan"><span class="ico">${ic('pot')}</span><span class="tx">Mein Essensplan<small>${Object.values(S.plan).some((d) => Object.values(d || {}).some((l) => l?.length)) ? `An ${Object.values(S.plan).filter((d) => Object.values(d || {}).some((l) => l?.length)).length} Wochentagen geplant` : 'Mahlzeiten pro Wochentag voreinstellen'}</small></span>${ic('fwd')}</button>
+        <button class="setrow" data-act="go" data-v="shop"><span class="ico">${ic('check')}</span><span class="tx">Einkaufsliste<small>Aus dem Essensplan, Mengen zusammengezählt</small></span>${ic('fwd')}</button>
         <button class="setrow" data-act="go" data-v="supps"><span class="ico">${ic('pill')}</span><span class="tx">Supplements<small>${S.supps.length ? S.supps.map((s) => esc(s.name)).join(', ') : 'Tabletten und Pulver zum Abhaken'}</small></span>${ic('fwd')}</button>
         <button class="setrow" data-act="go" data-v="watercfg"><span class="ico">${ic('drop')}</span><span class="tx">Wasser<small>Tagesziel und Glasgröße</small></span><span class="v">${S.prefs.water.on ? `${fmt(S.prefs.water.goal / 1000, 1)} l` : 'aus'}</span>${ic('fwd')}</button>
       </div>
@@ -2266,8 +2302,10 @@ V.plan = {
     const day = S.plan[wd] || {}, sum = Object.values(day).reduce((a, l) => a + planKcal(l || []), 0);
     const has = (d) => Object.values(S.plan[d] || {}).some((l) => l?.length);
     const goal = goalFor(addDays(today(), (wd - parseD(today()).getDay() + 7) % 7)).kcal;
+    const wkK = weekOrder().map((d) => Object.values(S.plan[d] || {}).reduce((a, l) => a + planKcal(l || []), 0)), nDays = wkK.filter((k) => k > 0).length;
     return `${topbar('Mein Essensplan')}
     <div class="pad" style="padding-top:0">
+      ${nDays ? `<button class="card weekplan" data-act="shopOpen"><span><b>Woche: ${nDays} ${nDays === 1 ? 'Tag' : 'Tage'} geplant</b><small>Ø ${fmt(wkK.reduce((a, k) => a + k, 0) / nDays)} kcal pro geplantem Tag</small></span><span class="go">${ic('check')} Einkaufsliste ${ic('fwd')}</span></button>` : ''}
       <div class="wdchips">${weekOrder().map((d) => `<button class="${d === wd ? 'on' : ''}" data-act="planDay" data-d="${d}" aria-label="${WD_LONG[d]}">${WD[d]}${has(d) ? '<i></i>' : ''}</button>`).join('')}</div>
       ${MEALS.map((m, i) => { const l = day[i] || []; return `<div class="card meal">
         <div class="meal-h"><div><h3 style="display:inline">${m}</h3><span class="k num">${l.length ? fmt(planKcal(l)) + ' kcal' : ''}</span></div><button class="addmini" data-act="planAdd" data-meal="${i}" aria-label="Zu ${m} hinzufügen">${ic('plus')}</button></div>
@@ -2276,6 +2314,65 @@ V.plan = {
       <div class="row2"><button class="btn sec" data-act="planCopy">${ic('copy')} Tag kopieren</button><button class="btn sec" data-act="planWork">Auf alle Werktage</button></div>
       <div class="card"><label class="togglerow"><span>Im Plus-Menü nur den Plan zeigen<small>Die Suche bleibt über „Anderes suchen“ erreichbar</small></span><input type="checkbox" class="tg" id="p-only" ${S.prefs.planOnly ? 'checked' : ''}></label></div>
       <p class="fine">Auf der Startseite stehen geplante Lebensmittel gestrichelt in der Mahlzeit. Mit Plus trägst du sie ein.</p>
+    </div>`;
+  },
+};
+
+/* Einkaufsliste aus dem Essensplan: Mengen der geplanten Tage zusammengezählt, Rezepte in Zutaten aufgelöst */
+const SHOP_DISH = ['Gericht', 'Foto', 'Schnell'];
+function shopDays(range) {
+  const order = weekOrder(), t = parseD(today()).getDay();
+  return range === 'week' ? order : order.slice(order.indexOf(t));
+}
+function shopItems(range) {
+  const map = new Map();
+  const add = (key, name, g, f, dish) => {
+    const x = map.get(key) || { key, name, g: 0, f, dish, n: 0 };
+    x.g += g; x.n++; map.set(key, x);
+  };
+  for (const d of shopDays(range)) for (const l of Object.values(S.plan[d] || {})) for (const p of l || []) {
+    const f = getFood(p.foodId);
+    if (f?.recipe?.items?.length) {
+      const raw = f.recipe.items.reduce((a, i) => a + i.g, 0), w = f.recipe.cooked > 0 ? f.recipe.cooked : raw, k = w ? p.g / w : 0;
+      for (const i of f.recipe.items) add(i.foodId || i.name, i.name, i.g * k, getFood(i.foodId), false);
+    } else add(p.foodId || p.name, p.name, p.g, f, SHOP_DISH.includes(p.src));
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'de'));
+}
+// Menge lesbar: ab 1 kg in kg, sonst auf 10 g gerundet; dazu Stückzahl, wenn das Lebensmittel eine Stück-Portion hat
+function shopAmount(x) {
+  const g = x.g, txt = g >= 1000 ? `${fmt(g / 1000, 1)} kg` : `${fmt(g >= 50 ? Math.round(g / 10) * 10 : Math.round(g))} g`;
+  const p = x.f?.portions?.find((q) => /^1 (Stück|Scheibe|Filet|Becher|Kugel|Dose|Flasche)/.test(q.l) && q.g > 0);
+  if (!p) return txt;
+  const n = Math.round((g / p.g) * 2) / 2;
+  return n >= 0.5 ? `${txt} · ca. ${fmt(n, n % 1 ? 1 : 0)} ${p.l.replace(/^1 /, '')}` : txt;
+}
+const shopState = () => (S.shop ||= { done: {}, extra: [] });
+const saveShop = () => setSetting('shop', S.shop).catch(() => {});
+function shopText(c) {
+  const st = shopState(), items = shopItems(c.range || 'rest');
+  const lines = items.filter((x) => !st.done[x.key]).map((x) => `- ${x.name}: ${shopAmount(x)}`).concat(st.extra.filter((e) => !e.done).map((e) => `- ${e.t}`));
+  return `Einkaufsliste (${c.range === 'week' ? 'ganze Woche' : 'bis Wochenende'})\n${lines.join('\n')}`;
+}
+V.shop = {
+  async load() { if (!S.shop) S.shop = await getSetting('shop', null) || { done: {}, extra: [] }; },
+  html(c) {
+    const range = c.range || 'rest', st = shopState(), items = shopItems(range);
+    const days = shopDays(range), ing = items.filter((x) => !x.dish), dishes = items.filter((x) => x.dish);
+    const row = (x) => { const on = !!st.done[x.key]; return `<label class="shoprow ${on ? 'done' : ''}"><input type="checkbox" data-shop="${esc(x.key)}" ${on ? 'checked' : ''}><span class="tx"><span class="n">${esc(x.name)}</span><span class="s">${shopAmount(x)}${x.n > 1 ? ` · ${x.n}× geplant` : ''}</span></span></label>`; };
+    const extra = st.extra.map((e) => `<label class="shoprow ${e.done ? 'done' : ''}"><input type="checkbox" data-shopx="${esc(e.id)}" ${e.done ? 'checked' : ''}><span class="tx"><span class="n">${esc(e.t)}</span></span><button class="x" data-act="shopRmX" data-id="${esc(e.id)}" aria-label="${esc(e.t)} entfernen">${ic('close')}</button></label>`).join('');
+    const open = items.filter((x) => !st.done[x.key]).length + st.extra.filter((e) => !e.done).length;
+    return `${topbar('Einkaufsliste')}
+    <div class="pad" style="padding-top:0">
+      <div class="seg" role="tablist"><button data-act="shopRange" data-v="rest" class="${range === 'rest' ? 'on' : ''}">Ab heute</button><button data-act="shopRange" data-v="week" class="${range === 'week' ? 'on' : ''}">Ganze Woche</button></div>
+      <div style="font-size:13px;color:var(--muted)">Aus deinem Essensplan: ${days.map((d) => WD[d]).join(', ')} · ${open} offen</div>
+      ${items.length ? '' : `<div class="card"><div class="empty" style="padding:0">Für diese Tage ist noch nichts geplant. Plane zuerst Mahlzeiten im Essensplan.</div></div>`}
+      ${ing.length ? `<div class="card shop"><div class="lbl">Zum Einkaufen</div>${ing.map(row).join('')}</div>` : ''}
+      ${dishes.length ? `<div class="card shop"><div class="lbl">Fertige Gerichte</div>${dishes.map(row).join('')}<div class="fine" style="margin:0;text-align:left">Gerichte aus der Gerichte-Liste. Die Zutaten dafür kennt die App nicht, trag sie unten selbst ein.</div></div>` : ''}
+      <div class="card shop"><div class="lbl">Noch dazu</div>${extra}
+        <div class="qrow"><input id="shopx" placeholder="z. B. Spülmittel" aria-label="Weiteren Eintrag hinzufügen" autocomplete="off"><button class="btn" data-act="shopAddX" style="width:auto">${ic('plus')}</button></div></div>
+      <div class="row2"><button class="btn sec" data-act="shopShare">${ic('copy')} Teilen</button><button class="btn ghost" data-act="shopReset">Haken zurücksetzen</button></div>
+      <p class="fine">Mengen sind zusammengezählt, Rezepte in ihre Zutaten aufgelöst. Ändert sich der Plan, ändert sich die Liste mit.</p>
     </div>`;
   },
 };
@@ -2542,6 +2639,23 @@ document.addEventListener('click', async (ev) => {
 
     /* Essensplan */
     case 'planDay': c.wd = +a.dataset.d; render(); break;
+    case 'shopOpen': go('shop'); break;
+    case 'shopRange': c.range = a.dataset.v; renderKeep(); break;
+    case 'shopAddX': {
+      const i = $('#shopx'), t = i?.value.trim();
+      if (!t) { i?.focus(); break; }
+      shopState().extra.push({ id: uid(), t, done: false }); await saveShop(); renderKeep();
+      setTimeout(() => $('#shopx')?.focus(), 0);
+      break;
+    }
+    case 'shopRmX': shopState().extra = shopState().extra.filter((e) => e.id !== a.dataset.id); await saveShop(); renderKeep(); break;
+    case 'shopReset': { const st = shopState(); st.done = {}; st.extra = st.extra.filter((e) => !e.done); await saveShop(); renderKeep(); toast('Haken zurückgesetzt'); break; }
+    case 'shopShare': {
+      const text = shopText(c);
+      try { if (navigator.share) { await navigator.share({ text }); break; } } catch (err) { if (err?.name === 'AbortError') break; }
+      try { await navigator.clipboard.writeText(text); toast('Liste kopiert'); } catch { toast('Teilen geht hier nicht.', true); }
+      break;
+    }
     case 'planAdd': S.pickFor = 'plan'; S.planTarget = { wd: c.wd, meal: +a.dataset.meal }; S.q = ''; go('add'); break;
     case 'planSave': {
       const g = readAmt();
@@ -2752,6 +2866,7 @@ document.addEventListener('click', async (ev) => {
       const list = await loadDay(S.day), t0 = Date.now();
       for (const [ix, i] of b.items.entries()) {
         const e = { id: uid(), date: S.day, meal: S.addMeal, t: t0 + ix, ...structuredClone(i) };
+        if (basketFrac() < 1) e.g = Math.round(i.g * basketFrac() * 10) / 10;
         await db.put('entries', e); list.push(e);
       }
       const k = basketTotals().kcal, n = b.items.length;
@@ -2829,6 +2944,12 @@ document.addEventListener('click', async (ev) => {
       break;
     }
     case 'unit': c.g = +a.dataset.g; render(); break;
+    case 'fracPick': {
+      const w = num($('#whole')?.value);
+      if (!(w > 0)) { $('#whole')?.focus(); return toast('Bitte zuerst eintragen, wie viel das Ganze wiegt.', true); }
+      c.whole = w; c.g = Math.round(w * +a.dataset.f); renderKeep(); break;
+    }
+    case 'basketFrac': S.basket.frac = +a.dataset.f; renderKeep(); break;
     case 'meal': c.meal = +a.dataset.m; c.g = readAmt(); render(); break;
     case 'saveEntry': {
       const g = readAmt();
@@ -3061,13 +3182,42 @@ document.addEventListener('submit', (ev) => {
   }
 });
 
+// Freier Anteil (z. B. 2/3, 4/5) bei Lebensmitteln und Mahlzeiten
+screen.addEventListener('change', (ev) => {
+  const t = ev.target, c = cur();
+  if (t.id !== 'fracin' && t.id !== 'bfracin') return;
+  if (!t.value.trim()) return;
+  const f = parseFrac(t.value);
+  if (f == null) { toast('Anteil bitte als Bruch (z. B. 2/3), Kommazahl (0,8) oder in Prozent (80 %).', true); return; }
+  if (t.id === 'bfracin') { S.basket.frac = f; renderKeep(); return; }
+  const w = num($('#whole')?.value);
+  if (!(w > 0)) { $('#whole')?.focus(); toast('Bitte zuerst eintragen, wie viel das Ganze wiegt.', true); return; }
+  c.whole = w; c.g = Math.round(w * f); renderKeep();
+});
+// Einkaufsliste: Haken setzen, Enter fügt einen eigenen Eintrag hinzu
+screen.addEventListener('change', async (ev) => {
+  const t = ev.target;
+  if (!t.matches?.('[data-shop],[data-shopx]')) return;
+  const st = shopState();
+  if (t.dataset.shop) { if (t.checked) st.done[t.dataset.shop] = true; else delete st.done[t.dataset.shop]; }
+  else { const e = st.extra.find((x) => x.id === t.dataset.shopx); if (e) e.done = t.checked; }
+  t.closest('.shoprow')?.classList.toggle('done', t.checked);
+  await saveShop();
+});
+screen.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && ev.target.id === 'shopx') { ev.preventDefault(); $('[data-act="shopAddX"]')?.click(); }
+  if (ev.key === 'Enter' && (ev.target.id === 'fracin' || ev.target.id === 'bfracin')) { ev.preventDefault(); ev.target.blur(); }
+});
 screen.addEventListener('input', (ev) => {
   const t = ev.target, c = cur();
   if (t.id === 'falc') { c.alc = t.value; return; }
   if (t.id === 'kindq') { c.kq = t.value; const l = $('#kindlist'); if (l) l.innerHTML = kindList(c); return; }
   if (t.id === 'q') { S.q = t.value; $('#tabs').hidden = !!S.q.trim(); refreshResults(); scheduleOnline(); return; }
+  if (t.id === 'whole') { const w = num(t.value), g = readAmt(); c.whole = w > 0 ? w : 0; const i = $('#fracinfo'); if (i) i.textContent = fracInfo(c.whole, g); $$('[data-act="fracPick"]').forEach((b) => b.classList.toggle('on', !!c.whole && Math.abs(g - c.whole * +b.dataset.f) < 0.6)); return; }
   if (t.id === 'amt') {
-    const g = readAmt(); c.g = g; const e = c.entry ? S.days.get(c.date).find((x) => x.id === c.entry) : null;
+    const g = readAmt(); c.g = g;
+    const fi = $('#fracinfo'); if (fi) fi.textContent = fracInfo(c.whole, g);
+    $$('[data-act="fracPick"]').forEach((b) => b.classList.toggle('on', !!c.whole && Math.abs(g - c.whole * +b.dataset.f) < 0.6)); const e = c.entry ? S.days.get(c.date).find((x) => x.id === c.entry) : null;
     const f = e || getFood(c.id); const n = nutOf(f.n, g);
     $('#c-kcal').textContent = fmt(n.kcal); $('#c-prot').textContent = fmt(n.prot, 1); $('#c-carb').textContent = fmt(n.carb, 1); $('#c-fat').textContent = fmt(n.fat, 1); $('#t-g').textContent = fmt(g);
     const ca = $('#c-alc'); if (ca) ca.textContent = fmt(alcKcal(g, +ca.dataset.pct)) + ' kcal';

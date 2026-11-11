@@ -650,3 +650,26 @@ table.cmp tfoot .btn.star.on{color:var(--accent)}
 /* Alkohol */
 .alcline{font-size:13px;color:var(--muted);margin-top:-2px}.alcline b{color:var(--ink)}
 .alccard .k.over{color:var(--lv3);font-weight:700}
+
+/* Wochenplan und Einkaufsliste */
+.card.weekplan{flex-direction:row;align-items:center;justify-content:space-between;gap:10px;text-align:left;border:0;cursor:pointer;font:inherit;color:inherit;width:100%}
+.card.weekplan small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+.card.weekplan .go{display:inline-flex;align-items:center;gap:4px;color:var(--accent);font-weight:700;font-size:14px;white-space:nowrap}
+.card.shop{gap:0}
+.shoprow{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.shoprow:last-of-type{border-bottom:0}
+.shoprow input[type=checkbox]{width:22px;height:22px;accent-color:var(--accent);flex:none;margin:0}
+.shoprow .tx{flex:1;min-width:0;display:flex;flex-direction:column}
+.shoprow .n{font-weight:600}
+.shoprow .s{font-size:12.5px;color:var(--muted)}
+.shoprow.done .n{text-decoration:line-through;color:var(--muted)}
+.shoprow .x{border:0;background:none;color:var(--muted);width:32px;height:32px;display:grid;place-items:center;cursor:pointer}
+.card.shop .qrow{margin-top:8px}
+
+/* Nur einen Teil gegessen */
+.fracbox{display:flex;flex-direction:column;gap:8px;font-size:14px}
+details.fracbox summary{cursor:pointer;color:var(--accent);font-weight:600;font-size:14px}
+details.fracbox[open] summary{margin-bottom:4px}
+.fracbox .s{font-size:12.5px;color:var(--muted)}
+.fracbox .qrow input{text-align:right}
+.fracbox .chips{flex-wrap:wrap;overflow:visible}
