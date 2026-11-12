@@ -1,8 +1,8 @@
 // Service Worker: macht die App offline nutzbar. Bei Änderungen VERSION erhöhen.
-const VERSION = 'kalorien-v1.6.2';
+const VERSION = 'kalorien-v1.6.3';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
-  'js/app.js', 'js/db.js', 'js/basis.js', 'js/off.js', 'js/scanner.js', 'js/parser.js', 'js/ocr.js', 'js/goals.js', 'js/nutrients.js', 'js/ingredients.js', 'js/nutriscore.js', 'js/dishes.js', 'js/foodcam.js', 'js/util.js',
+  'js/app.js', 'js/db.js', 'js/basis.js', 'js/off.js', 'js/scanner.js', 'js/parser.js', 'js/ocr.js', 'js/goals.js', 'js/nutrients.js', 'js/ingredients.js', 'js/nutriscore.js', 'js/dishes.js', 'js/foodcam.js', 'js/util.js', 'js/search.js', 'js/synonyms.js',
   'fonts/figtree.woff2', 'fonts/bricolage.woff2',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
   'vendor/zxing/zxing.min.js', 'vendor/tesseract/tesseract.min.js', 'vendor/tesseract/worker.min.js',

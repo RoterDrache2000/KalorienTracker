@@ -7,11 +7,12 @@ import { FIELDS, plausibility } from './parser.js';
 import { MICRO, MKEYS, SUPP_EXTRA } from './nutrients.js';
 import * as ING from './ingredients.js';
 import { nutriScore } from './nutriscore.js';
+import * as SEARCH from './search.js';
 import { DISHES, DISH_MAP, rankDishes, CLIP_TEXTS, rankClip, familyOf, KINDS, kindOf, dishesOfKind, rankKinds } from './dishes.js';
 import { LIFE, GOALS, DEFAULT_PROFILE, DEFAULT_SPLIT, calc, goalText, trend, checkProfile, migrateProfile, macroGrams } from './goals.js';
 import { $, $$, ic, fmt, num, num0, inVal, esc, today, addDays, dayDiff, dayLabel, dateLong, colorFor, initials, norm, download, parseD, dstr } from './util.js';
 
-const APP_VERSION = '1.6.2';
+const APP_VERSION = '1.6.3';
 const screen = $('#screen');
 const MEALS = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snacks'];
 const SRC = { Gericht: ['Gericht, Richtwert', 'bls'], OFF: ['Open Food Facts', 'off'], BLS: ['Grundlebensmittel', 'bls'], Eigen: ['Eigenes', 'eigen'], Rezept: ['Rezept', 'rezept'], Foto: ['Foto-Erfassung', 'foto'], Schnell: ['Schnell-Eintrag', 'foto'] };
@@ -26,7 +27,7 @@ const S = {
   day: today(),
   stack: [{ v: 'heute' }],
   addMeal: defaultMeal(),
-  addTab: 'Zuletzt',
+  addTab: 'Häufig',
   basket: null, // Mahlzeit, die gerade aus mehreren Teilen zusammengestellt wird
   combos: [], // gespeicherte Mahlzeiten
   checks: [], // zuletzt geprüfte Produkte (Inhaltsstoff-Check)
@@ -797,61 +798,38 @@ V.naehrwerte = {
 };
 
 /* Hinzufügen & Suche */
+// Häufig gegessen: nach Nutzung (letzte 180 Tage, frische Tage zählen mehr), Favorit und passender Mahlzeit
+const searchCtx = () => ({ usage: S.usage, meal: S.addMeal, favs: S.favs, qmem: S.qmem });
 function recentFoods() {
-  const seen = new Map();
-  const days = [...S.days.keys()].sort().reverse();
-  for (const d of days) for (const e of [...S.days.get(d)].reverse()) if (e.src !== 'Schnell' && !seen.has(e.foodId)) seen.set(e.foodId, e);
-  return [...seen.values()].map((e) => getFood(e.foodId) || entryAsFood(e)).slice(0, 30);
+  if (!S.usage) return [];
+  const foods = [...S.usage.last.values()].map((e) => getFood(e.foodId) || entryAsFood(e));
+  return SEARCH.frequent(foods, searchCtx(), 30);
 }
 function entryAsFood(e) { return { id: e.foodId, src: e.src, name: e.name, brand: e.brand, img: e.img, n: e.n, portions: e.portions || [] }; }
 
-// Tippfehler-tolerant: ein Buchstabe falsch, zu viel oder zu wenig ist okay (ab 4 Buchstaben)
-function near(a, b) {
-  if (Math.abs(a.length - b.length) > 1) return false;
-  let i = 0, j = 0, diff = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) { i++; j++; continue; }
-    if (++diff > 1) return false;
-    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
-  }
-  return diff + (a.length - i) + (b.length - j) <= 1;
-}
-function wordHit(w, hay, hayWords) {
-  if (hay.includes(w)) return 2;
-  if (w.length >= 4 && hayWords.some((h) => near(w, h) || near(w, h.slice(0, w.length)))) return 1;
-  return 0;
-}
+// Suche auf dem Gerät: Tippfehler, Wortstamm, ä = ae, Wortteile, Synonyme; sortiert nach Nutzung und Gelerntem
 function localSearch(q) {
-  const words = norm(q).split(/\s+/).filter(Boolean);
-  const pool = [...S.foods.values(), ...BASIS, ...DISH_FOODS.values()];
-  const scored = [];
-  for (const f of pool) {
-    const hay = norm(f.name + ' ' + (f.brand || ''));
-    const hayWords = hay.split(/[^a-z0-9]+/).filter(Boolean);
-    const hits = words.map((w) => wordHit(w, hay, hayWords));
-    if (hits.some((h) => h === 0)) continue;
-    let s = hits.every((h) => h === 2) ? 2 : 0;
-    if (norm(f.name).startsWith(words[0])) s += 3;
-    if (f.src === 'Eigen' || f.src === 'Rezept' || f.src === 'Foto') s += 4;
-    if (S.favs.has(f.id)) s += 5;
-    if (f.src === 'OFF') s += 1;
-    scored.push([s, f]);
-  }
-  return scored.sort((a, b) => b[0] - a[0] || a[1].name.localeCompare(b[1].name, 'de')).slice(0, 40).map((x) => x[1]);
+  return SEARCH.rank(q, [...S.foods.values(), ...BASIS, ...DISH_FOODS.values()], searchCtx(), 40);
+}
+// Merkt sich, was nach einer Suche gewählt wurde (letzte 200)
+function rememberQuery(f) {
+  const q = S.q.trim(); if (!q || !f?.id) return;
+  S.qmem = [...(S.qmem || []).filter((m) => !(m.q === q && m.id === f.id)), { q, id: f.id }].slice(-200);
+  setSetting('qmem', S.qmem);
 }
 
 function searchResults() {
   const q = S.q.trim();
   if (!q) {
     let list = [], extra = '';
-    if (S.addTab === 'Zuletzt') list = recentFoods();
+    if (S.addTab === 'Häufig') list = recentFoods();
     if (S.addTab === 'Favoriten') list = [...S.favs].map(getFood).filter(Boolean);
     if (S.addTab === 'Eigene') { list = [...S.foods.values()].filter((f) => f.src === 'Eigen' || f.src === 'Foto').sort((a, b) => a.name.localeCompare(b.name, 'de')); extra = `<button class="btn sec" data-act="newfood">${ic('plus')} Eigenes Lebensmittel anlegen</button>`; }
     if (S.addTab === 'Mahlzeiten') {
       return S.combos.length ? `<div class="list">${S.combos.map((m) => swipeRow('combo', m.id, comboItem(m))).join('')}</div>` : `<div class="empty" style="padding:4px 2px">Noch keine gespeicherten Mahlzeiten. Wähl ein Lebensmittel und tippe auf „Hinzufügen“. So stellst du z. B. Pommes mit Mayo und Ketchup zusammen und kannst sie dir mit Namen merken.</div>`;
     }
     if (S.addTab === 'Rezepte') { list = [...S.foods.values()].filter((f) => f.src === 'Rezept').sort((a, b) => a.name.localeCompare(b.name, 'de')); extra = `<button class="btn sec" data-act="newrecipe">${ic('pot')} Neues Rezept</button>`; }
-    const empty = { Zuletzt: 'Hier erscheint, was du zuletzt gegessen hast. Such oben nach einem Lebensmittel oder scanne einen Barcode.', Favoriten: 'Noch keine Favoriten. Tippe in einem Produkt auf den Stern.', Eigene: 'Noch keine eigenen Lebensmittel.', Rezepte: 'Noch keine Rezepte.' }[S.addTab];
+    const empty = { Häufig: 'Hier erscheint, was du oft isst. Such oben nach einem Lebensmittel oder scanne einen Barcode.', Favoriten: 'Noch keine Favoriten. Tippe in einem Produkt auf den Stern.', Eigene: 'Noch keine eigenen Lebensmittel.', Rezepte: 'Noch keine Rezepte.' }[S.addTab];
     const own = S.addTab === 'Eigene' || S.addTab === 'Rezepte';
     return `${list.length ? `<div class="list">${list.map((f) => (own ? swipeRow('food', f.id, resultItem(f)) : resultItem(f))).join('')}</div>` : `<div class="empty" style="padding:4px 2px">${empty}</div>`}${extra}`;
   }
@@ -892,7 +870,7 @@ function scheduleOnline(immediate) {
       const list = await OFF.search(q);
       if (my !== searchSeq) return;
       list.forEach((f) => { if (!S.foods.has(f.id)) S.tmp.set(f.id, f); });
-      S.online = { q, status: 'done', list: list.map((f) => S.foods.get(f.id) || f), msg: '' };
+      S.online = { q, status: 'done', list: SEARCH.sortOnline(q, list.map((f) => S.foods.get(f.id) || f)), msg: '' };
     } catch (e) {
       if (my !== searchSeq) return;
       S.online = { q, status: 'error', list: [], msg: e.message || 'Online-Suche fehlgeschlagen.' };
@@ -961,8 +939,12 @@ function comboItem(m) {
 }
 
 V.add = {
-  // für "Zuletzt": Einträge der letzten 60 Tage laden
+  // Einträge der letzten 60 Tage laden (Tagebuch-Ansichten)
   async load() {
+    // Nutzung für Suche und „Häufig“ (letzte 180 Tage)
+    if (!S.qmem) S.qmem = (await getSetting('qmem')) || [];
+    const usageAll = await db.range('entries', 'date', addDays(today(), -180), addDays(today(), 7));
+    S.usage = SEARCH.usageFrom(usageAll, today());
     if (S.recentLoaded) return;
     const all = await db.range('entries', 'date', addDays(today(), -60), addDays(today(), 7));
     const byDay = new Map();
@@ -990,7 +972,7 @@ V.add = {
         <button data-act="photo"><span class="ic">${ic('cam')}</span><span>Etikett<small>Nährwerttabelle</small></span></button>
         ${picking ? '' : `<button data-act="mealPhoto"><span class="ic">${ic('plate')}</span><span>Essen<small>Foto vom Teller</small></span></button>`}
       </div>
-      <div class="chips" id="tabs" ${S.q ? 'hidden' : ''}>${['Zuletzt', 'Favoriten', 'Mahlzeiten', 'Eigene', 'Rezepte'].map((t) => `<button class="chip ${S.addTab === t ? 'on' : ''}" data-act="tab" data-t="${t}">${t}</button>`).join('')}</div>
+      <div class="chips" id="tabs" ${S.q ? 'hidden' : ''}>${['Häufig', 'Favoriten', 'Mahlzeiten', 'Eigene', 'Rezepte'].map((t) => `<button class="chip ${S.addTab === t ? 'on' : ''}" data-act="tab" data-t="${t}">${t}</button>`).join('')}</div>
       <div id="results" style="display:flex;flex-direction:column;gap:10px">${searchResults()}</div>`}
     </div>`;
   },
@@ -2154,6 +2136,7 @@ V.settings = {
         <button class="setrow" data-act="exportJson">${ic('down')}<span class="tx">Sicherung speichern<small>Alles als Datei (JSON), z. B. für ein neues Handy</small></span></button>
         <button class="setrow" data-act="exportCsv">${ic('down')}<span class="tx">Tagebuch als Tabelle<small>CSV für Excel oder Numbers</small></span></button>
         <button class="setrow" data-act="import">${ic('up')}<span class="tx">Sicherung laden<small>Ersetzt die Daten auf diesem Gerät</small></span></button>
+        <button class="setrow" data-act="clearQmem">${ic('search')}<span class="tx">Suchverlauf löschen<small>Die Suche vergisst, was du nach welchem Suchwort gewählt hast</small></span></button>
         <button class="setrow" data-act="wipe" style="color:var(--danger)">${ic('trash')}<span class="tx">Alle Daten löschen</span></button>
       </div>
       <div class="lbl">Über die App</div>
@@ -2874,7 +2857,8 @@ document.addEventListener('click', async (ev) => {
       root('heute'); toast(`${n} ${n === 1 ? 'Teil' : 'Teile'} mit ${fmt(k)} kcal zu ${MEALS[S.addMeal]} hinzugefügt`);
       break;
     }
-    case 'pick': { const f = getFood(a.dataset.id); if (f) foodChosen(f); break; }
+    case 'clearQmem': S.qmem = []; await setSetting('qmem', []); toast('Suchverlauf gelöscht'); break;
+    case 'pick': { const f = getFood(a.dataset.id); if (f) { rememberQuery(f); foodChosen(f); } break; }
     case 'mealPhoto': if (c.v === 'mealguess') replace('mealcam'); else go('mealcam'); break;
     case 'mealShoot': $('#mealInput').value = ''; $('#mealInput').click(); break;
     case 'mealGallery': $('#mealGallery').value = ''; $('#mealGallery').click(); break;
